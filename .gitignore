@@ -5,6 +5,7 @@
 *.db
 *.sqlite
 *.sqlite3
+data/
 
 # Python
 __pycache__/
@@ -21,13 +22,8 @@ build/
 knowledge/*
 !knowledge/.gitkeep
 
-# Archivos generados por Claude Code durante onboarding
-agent/
-config/
-tests/
-requirements.txt
-Dockerfile
-docker-compose.yml
+# Nota: agent/, config/, tests/, requirements.txt, Dockerfile y docker-compose.yml
+# AHORA se suben a GitHub para que Railway haga el deploy automático
 
 # Session state
 config/session.yaml

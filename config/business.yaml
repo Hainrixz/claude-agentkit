@@ -1,0 +1,33 @@
+# Configuración del negocio — Generado por AgentKit
+negocio:
+  nombre: Mundo Electronico
+  descripcion: |
+    Mundo Electronico es un servicio integral de electrónica y telecomunicaciones.
+
+    Servicios principales:
+    - Reparación de celulares, tablets y notebooks
+    - Cambio de componentes (pantallas, baterías, conectores, etc.)
+    - Actualizaciones de software y mantenimiento preventivo
+    - Venta de accesorios (protectores, cargadores, cables, etc.)
+    - Entrega y retiro de paquetería
+      * Punto Pickit
+      * Sucursal de Correo Argentino
+
+    Clientes: Personas particulares y pequeños negocios que necesitan servicios
+    de reparación, soporte técnico y soluciones de logística.
+  horario: "Lunes a viernes 11:00 a 19:00 hs, Sábados 11:00 a 14:00 hs"
+  ubicacion: "Argentina"
+
+agente:
+  nombre: Mundo Bot
+  tono: empático y cálido
+  casos_de_uso:
+    - Responder preguntas frecuentes sobre reparaciones y servicios
+    - Agendar citas para reparación
+    - Calificar leads y ayudar en el proceso de venta
+    - Tomar pedidos de accesorios
+    - Soporte post-venta y seguimiento de reparaciones
+
+metadata:
+  creado: 2026-03-28
+  version: "1.0"

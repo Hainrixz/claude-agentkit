@@ -1,0 +1,121 @@
+# Catálogo de precios — Mundo Electronico
+# Generado por AgentKit — Actualizar según necesites
+
+moneda: ARS
+
+precios:
+  pantallas:
+    - modelo: "iPhone 14/14 Pro"
+      precio: 85000
+      tiempo: "24-48 hs"
+    - modelo: "iPhone 13/13 Pro"
+      precio: 75000
+      tiempo: "24-48 hs"
+    - modelo: "iPhone 12/12 Pro"
+      precio: 65000
+      tiempo: "24-48 hs"
+    - modelo: "iPhone 11"
+      precio: 55000
+      tiempo: "24-48 hs"
+    - modelo: "Samsung S23/S24"
+      precio: 70000
+      tiempo: "24-48 hs"
+    - modelo: "Samsung S22"
+      precio: 60000
+      tiempo: "24-48 hs"
+    - modelo: "Motorola (genérico)"
+      precio: 45000
+      tiempo: "24-48 hs"
+    - modelo: "Tablet"
+      precio: 55000
+      tiempo: "48-72 hs"
+    - modelo: "Notebook"
+      precio: 120000
+      tiempo: "48-72 hs"
+
+  baterias:
+    - modelo: "iPhone (cualquier modelo)"
+      precio: 25000
+      tiempo: "1-2 horas"
+    - modelo: "Samsung (genérico)"
+      precio: 20000
+      tiempo: "1-2 horas"
+    - modelo: "Tablet"
+      precio: 35000
+      tiempo: "2-3 horas"
+    - modelo: "Notebook"
+      precio: 70000
+      tiempo: "2-4 horas"
+
+  cambio_componentes:
+    - nombre: "Conector de carga"
+      precio: 15000
+      tiempo: "2-4 horas"
+    - nombre: "Micrófono"
+      precio: 12000
+      tiempo: "2-4 horas"
+    - nombre: "Parlante"
+      precio: 18000
+      tiempo: "2-4 horas"
+    - nombre: "Cámara frontal"
+      precio: 20000
+      tiempo: "2-4 horas"
+    - nombre: "Cámara trasera"
+      precio: 25000
+      tiempo: "2-4 horas"
+    - nombre: "Botón de encendido"
+      precio: 10000
+      tiempo: "2-4 horas"
+
+  accesorios:
+    - nombre: "Funda silicona (cualquier modelo)"
+      precio: 8000
+    - nombre: "Funda resistente/armada"
+      precio: 12000
+    - nombre: "Vidrio templado"
+      precio: 5000
+    - nombre: "Protector de cámara"
+      precio: 3000
+    - nombre: "Cargador rápido original"
+      precio: 18000
+    - nombre: "Cargador compatible"
+      precio: 10000
+    - nombre: "Cable USB-C"
+      precio: 6000
+    - nombre: "Cable Lightning (Apple)"
+      precio: 8000
+    - nombre: "Auriculares Bluetooth básicos"
+      precio: 12000
+    - nombre: "Power Bank 20000mAh"
+      precio: 25000
+    - nombre: "Stand para celular"
+      precio: 4000
+
+  servicios:
+    - nombre: "Diagnóstico técnico"
+      precio: 0
+      descripcion: "SIN CARGO"
+    - nombre: "Actualización de software"
+      precio: 8000
+      tiempo: "30 min - 1 hora"
+    - nombre: "Limpieza profunda (ventiladores, etc.)"
+      precio: 15000
+      tiempo: "1-2 horas"
+    - nombre: "Desbloqueo de patrón/PIN"
+      precio: 12000
+      tiempo: "1-3 horas"
+    - nombre: "Recuperación de datos"
+      precio: 25000
+      tiempo: "2-4 horas"
+
+nota_precios: |
+  ⚠️ Los precios son orientativos y están en pesos argentinos (ARS).
+  Pueden variar según:
+  - Disponibilidad de repuestos
+  - Estado del dispositivo
+  - Reparaciones adicionales detectadas
+  - Ofertas o promociones vigentes
+
+  Confirmamos el precio EXACTO cuando traes el dispositivo para diagnosis.
+
+horario_aplicacion: "Lunes a Viernes 11 a 19hs, Sábados 11 a 14hs"

@@ -1336,4 +1336,106 @@ ENVIRONMENT=development  # development | production
 # Base de datos
 DATABASE_URL=sqlite+aiosqlite:///./agentkit.db  # local
 # DATABASE_URL=postgresql+asyncpg://...          # producción Railway
+
+# Supabase — integración con RIWEB.APP dashboard
+SUPABASE_URL=https://xeqbapfjosgchkhqwzsh.supabase.co
+SUPABASE_KEY=<anon key del proyecto Riweb.app>
+CLIENT_ID=<UUID del cliente en tabla clients>  # o ID_DE_CLIENTE en Railway
+
+# Pagos (opcionales)
+# MERCADO_PAGO_ACCESS_TOKEN=...
+# STRIPE_SECRET_KEY=...
+# STRIPE_WEBHOOK_SECRET=...
+```
+
+---
+
+## 8. Integración con RIWEB.APP Dashboard
+
+Este bot se conecta con el dashboard admin en **riweb.app/dashboard** via Supabase.
+Cuando Supabase está configurado, el bot usa la DB centralizada en lugar de SQLite local.
+
+### Tablas de Supabase usadas
+
+| Tabla | Para qué |
+|-------|----------|
+| `clients` | Configuración del negocio (plan, fechas, hosting, pagos) |
+| `ai_prompts` | System prompt + tono + objetivo del bot por cliente |
+| `conversations` | Historial completo de mensajes (usuario + bot) |
+| `bot_leads` | Contactos nuevos capturados automáticamente |
+| `tickets` | Tickets de soporte/reparación generados por el bot |
+| `pagos` | Historial de pagos del cliente |
+
+### Variables de entorno requeridas
+
+```env
+SUPABASE_URL=https://xeqbapfjosgchkhqwzsh.supabase.co
+SUPABASE_KEY=<anon key>
+
+# Identifica a qué cliente/negocio pertenece este bot
+# Soporta ambos nombres para compatibilidad con Railway en español:
+CLIENT_ID=<uuid>        # nombre estándar
+ID_DE_CLIENTE=<uuid>    # alias Railway en español
+
+# La key de Anthropic también soporta nombre en español:
+ANTHROPIC_API_KEY=<key>        # nombre estándar
+CLAVE_API_ANTRÓPICA=<key>      # alias Railway en español
+```
+
+### Flujo completo con Supabase
+
+```
+Mensaje entrante (WhatsApp)
+    ↓
+main.py lee CLIENT_ID / ID_DE_CLIENTE del .env
+    ↓
+supabase_client.registrar_lead_si_nuevo()
+    → Si es el primer mensaje de ese teléfono → inserta en bot_leads
+    ↓
+memory.obtener_historial() → lee conversations de Supabase
+    ↓
+brain.obtener_system_prompt() → lee ai_prompts de Supabase
+    ↓
+Claude API → genera respuesta
+    ↓
+memory.guardar_mensaje() → guarda en conversations (user + assistant)
+    ↓
+Proveedor envía respuesta por WhatsApp
+```
+
+### Qué ve el dashboard en tiempo real
+
+- **Leads**: cada número que escribe al bot aparece como nuevo lead
+- **Conversaciones**: click en un lead → hilo completo usuario/bot
+- **Bot/Prompts**: system prompt editable desde el dashboard, se aplica al instante
+- **Suscripciones**: plan, pagos, hosting, fechas de soporte del cliente
+
+### Clientes actuales en Supabase
+
+| Nombre | CLIENT_ID | WhatsApp |
+|--------|-----------|----------|
+| Mundo Electronico | `d7a8ff20-02ec-4263-9491-79dddb41bc4f` | — |
+| Vidrieria Florida | `43f99391-accc-4d04-8bd8-884494bca292` | +5491127135239 |
+
+### Cómo conectar un nuevo cliente
+
+1. Crear el cliente en RIWEB → Dashboard → Clientes → "Nuevo cliente"
+2. Copiar el UUID generado
+3. En Railway (o .env del bot), agregar `CLIENT_ID=<uuid>`
+4. Redeploy → el bot ya escribe en Supabase para ese cliente
+
+### Sistema de pagos integrado
+
+El bot expone endpoints para pagos:
+
+```
+POST /register-payment       → Registra pago manual
+POST /checkout/mercado-pago  → Crea checkout de Mercado Pago
+POST /checkout/stripe        → Crea checkout de Stripe
+POST /webhooks/mercado-pago  → Confirma pago desde webhook MP
+POST /webhooks/stripe        → Confirma pago desde webhook Stripe
+```
+
+Los pagos confirmados se guardan en la tabla `pagos` y aparecen en
+RIWEB → Dashboard → Suscripciones → Historial de pagos.
 ```
