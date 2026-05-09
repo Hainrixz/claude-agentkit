@@ -229,10 +229,12 @@ PREGUNTA 9: ¿Qué servicio de WhatsApp quieres usar para conectar tu agente?
 PREGUNTA 10: [Depende de la respuesta de PREGUNTA 9]
 
             Si eligió META CLOUD API:
-                Necesitamos 3 datos de tu app de Facebook:
+                Necesitamos 4 datos de tu app de Facebook:
                 1. Access Token (permanente)
                 2. Phone Number ID
-                3. Verify Token (puedes inventar uno, ej: "mi-agente-2024")
+                3. Verify Token (Claude Code te genera uno aleatorio seguro)
+                4. App Secret (necesario para validar la firma del webhook —
+                   sin esto cualquiera podría enviar mensajes falsos al agente)
 
                 Si NO los tiene → Guiar paso a paso:
                     1. Ve a developers.facebook.com
@@ -240,7 +242,9 @@ PREGUNTA 10: [Depende de la respuesta de PREGUNTA 9]
                     3. Agrega el producto "WhatsApp"
                     4. En WhatsApp → API Setup, copia el Phone Number ID
                     5. Genera un token de acceso permanente
-                    6. Elige un Verify Token (cualquier texto secreto que tú inventes)
+                    6. En Settings → Basic, copia el "App Secret" (clic en "Show")
+                    7. Para el Verify Token: Claude Code lo genera con
+                       python -c "import secrets;print(secrets.token_urlsafe(32))"
 
             Si eligió TWILIO:
                 Necesitamos 3 datos de tu cuenta Twilio:
@@ -420,9 +424,11 @@ def obtener_proveedor() -> ProveedorWhatsApp:
 # Generado por AgentKit
 
 import os
+import hmac
+import hashlib
 import logging
 import httpx
-from fastapi import Request
+from fastapi import Request, HTTPException
 from agent.providers.base import ProveedorWhatsApp, MensajeEntrante
 
 logger = logging.getLogger("agentkit")
@@ -435,6 +441,8 @@ class ProveedorMeta(ProveedorWhatsApp):
         self.access_token = os.getenv("META_ACCESS_TOKEN")
         self.phone_number_id = os.getenv("META_PHONE_NUMBER_ID")
         self.verify_token = os.getenv("META_VERIFY_TOKEN", "agentkit-verify")
+        # App Secret para validar firma del webhook (X-Hub-Signature-256)
+        self.app_secret = os.getenv("META_APP_SECRET")
         self.api_version = "v21.0"
 
     async def validar_webhook(self, request: Request) -> dict | int | None:
@@ -448,11 +456,37 @@ class ProveedorMeta(ProveedorWhatsApp):
             return int(challenge)
         return None
 
+    def _verificar_firma(self, body: bytes, firma_header: str) -> bool:
+        """
+        Valida la firma HMAC-SHA256 que Meta envía en X-Hub-Signature-256.
+        Sin esta validación cualquiera podría enviar mensajes falsos al webhook.
+        """
+        if not self.app_secret:
+            logger.error("META_APP_SECRET no configurado — webhook no se puede verificar")
+            return False
+        if not firma_header or not firma_header.startswith("sha256="):
+            return False
+        firma_recibida = firma_header.split("=", 1)[1]
+        firma_esperada = hmac.new(
+            self.app_secret.encode(),
+            body,
+            hashlib.sha256
+        ).hexdigest()
+        # compare_digest evita timing attacks
+        return hmac.compare_digest(firma_recibida, firma_esperada)
+
     async def parsear_webhook(self, request: Request) -> list[MensajeEntrante]:
-        """Parsea el payload anidado de Meta Cloud API."""
-        body = await request.json()
+        """Parsea el payload anidado de Meta Cloud API tras verificar firma."""
+        body = await request.body()
+        firma_header = request.headers.get("x-hub-signature-256", "")
+        if not self._verificar_firma(body, firma_header):
+            logger.warning("Firma Meta inválida — webhook rechazado")
+            raise HTTPException(status_code=403, detail="Firma inválida")
+
+        import json
+        payload = json.loads(body)
         mensajes = []
-        for entry in body.get("entry", []):
+        for entry in payload.get("entry", []):
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 for msg in value.get("messages", []):
@@ -495,10 +529,12 @@ class ProveedorMeta(ProveedorWhatsApp):
 # Generado por AgentKit
 
 import os
+import hmac
+import hashlib
 import logging
 import base64
 import httpx
-from fastapi import Request
+from fastapi import Request, HTTPException
 from agent.providers.base import ProveedorWhatsApp, MensajeEntrante
 
 logger = logging.getLogger("agentkit")
@@ -511,13 +547,44 @@ class ProveedorTwilio(ProveedorWhatsApp):
         self.account_sid = os.getenv("TWILIO_ACCOUNT_SID")
         self.auth_token = os.getenv("TWILIO_AUTH_TOKEN")
         self.phone_number = os.getenv("TWILIO_PHONE_NUMBER")
+        # Si TRUE, valida X-Twilio-Signature; usar FALSE solo para tests locales
+        self.validar_firma = os.getenv("TWILIO_VALIDATE_SIGNATURE", "true").lower() == "true"
+
+    def _verificar_firma(self, url: str, params: dict, firma_header: str) -> bool:
+        """
+        Valida la firma HMAC-SHA1 que Twilio envía en X-Twilio-Signature.
+        Twilio firma: URL completa + parámetros del form ordenados alfabéticamente.
+        Sin esta validación cualquiera podría enviar mensajes falsos al webhook.
+        """
+        if not self.auth_token:
+            logger.error("TWILIO_AUTH_TOKEN no configurado — webhook no se puede verificar")
+            return False
+        if not firma_header:
+            return False
+        # Construir el string a firmar según especificación de Twilio
+        cadena = url
+        for clave in sorted(params.keys()):
+            cadena += clave + params[clave]
+        firma_esperada = base64.b64encode(
+            hmac.new(self.auth_token.encode(), cadena.encode(), hashlib.sha1).digest()
+        ).decode()
+        return hmac.compare_digest(firma_header, firma_esperada)
 
     async def parsear_webhook(self, request: Request) -> list[MensajeEntrante]:
-        """Parsea el payload form-encoded de Twilio."""
+        """Parsea el payload form-encoded de Twilio tras verificar firma."""
         form = await request.form()
-        texto = form.get("Body", "")
-        telefono = form.get("From", "").replace("whatsapp:", "")
-        mensaje_id = form.get("MessageSid", "")
+        params = {k: v for k, v in form.items()}
+
+        if self.validar_firma:
+            firma_header = request.headers.get("x-twilio-signature", "")
+            url = str(request.url)
+            if not self._verificar_firma(url, params, firma_header):
+                logger.warning("Firma Twilio inválida — webhook rechazado")
+                raise HTTPException(status_code=403, detail="Firma inválida")
+
+        texto = params.get("Body", "")
+        telefono = params.get("From", "").replace("whatsapp:", "")
+        mensaje_id = params.get("MessageSid", "")
         if not texto:
             return []
         return [MensajeEntrante(
@@ -561,7 +628,9 @@ Funciona con cualquier proveedor (Meta, Twilio) gracias a la capa de providers.
 """
 
 import os
+import time
 import logging
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -582,6 +651,37 @@ logger = logging.getLogger("agentkit")
 # Proveedor de WhatsApp (se configura en .env con WHATSAPP_PROVIDER)
 proveedor = obtener_proveedor()
 PORT = int(os.getenv("PORT", 8000))
+
+# Cache de mensajes ya procesados — evita procesar duplicados cuando Meta
+# hace retry del webhook (Meta espera 200 en <20s o reenvía).
+# OrderedDict para FIFO: descartamos los más viejos al alcanzar el límite.
+MENSAJES_PROCESADOS: OrderedDict[str, float] = OrderedDict()
+MENSAJES_PROCESADOS_MAX = 10000
+MENSAJES_PROCESADOS_TTL = 3600  # 1h
+
+
+def ya_procesado(mensaje_id: str) -> bool:
+    """True si el mensaje_id ya fue procesado dentro del TTL."""
+    if not mensaje_id:
+        return False
+    ahora = time.time()
+    # Limpiar entradas expiradas
+    while MENSAJES_PROCESADOS:
+        primer_id = next(iter(MENSAJES_PROCESADOS))
+        if ahora - MENSAJES_PROCESADOS[primer_id] > MENSAJES_PROCESADOS_TTL:
+            MENSAJES_PROCESADOS.popitem(last=False)
+        else:
+            break
+    return mensaje_id in MENSAJES_PROCESADOS
+
+
+def marcar_procesado(mensaje_id: str) -> None:
+    """Registra mensaje_id como procesado, manteniendo el cache acotado."""
+    if not mensaje_id:
+        return
+    MENSAJES_PROCESADOS[mensaje_id] = time.time()
+    while len(MENSAJES_PROCESADOS) > MENSAJES_PROCESADOS_MAX:
+        MENSAJES_PROCESADOS.popitem(last=False)
 
 
 @asynccontextmanager
@@ -631,6 +731,13 @@ async def webhook_handler(request: Request):
             if msg.es_propio or not msg.texto:
                 continue
 
+            # Idempotencia: Meta reenvía el webhook si no respondemos a tiempo.
+            # Sin este check el mismo mensaje genera 2 llamadas a Claude y 2 respuestas.
+            if ya_procesado(msg.mensaje_id):
+                logger.info(f"Mensaje duplicado ignorado: {msg.mensaje_id}")
+                continue
+            marcar_procesado(msg.mensaje_id)
+
             logger.info(f"Mensaje de {msg.telefono}: {msg.texto}")
 
             # Obtener historial ANTES de guardar el mensaje actual
@@ -676,8 +783,13 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger("agentkit")
 
-# Cliente de Anthropic
-client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+# Cliente de Anthropic — timeout de 30s evita que un cuelgue de la API
+# bloquee el webhook indefinidamente (Meta reenviaría tras 20s)
+client = AsyncAnthropic(
+    api_key=os.getenv("ANTHROPIC_API_KEY"),
+    timeout=30.0,
+    max_retries=2,
+)
 
 
 def cargar_config_prompts() -> dict:
@@ -1060,12 +1172,14 @@ WHATSAPP_PROVIDER=  # meta | twilio
 # --- Si WHATSAPP_PROVIDER=meta ---
 # META_ACCESS_TOKEN=...
 # META_PHONE_NUMBER_ID=...
-# META_VERIFY_TOKEN=agentkit-verify
+# META_VERIFY_TOKEN=...           # Aleatorio: python -c "import secrets;print(secrets.token_urlsafe(32))"
+# META_APP_SECRET=...              # App Secret de Meta — REQUERIDO para validar firma
 
 # --- Si WHATSAPP_PROVIDER=twilio ---
 # TWILIO_ACCOUNT_SID=...
 # TWILIO_AUTH_TOKEN=...
 # TWILIO_PHONE_NUMBER=...
+# TWILIO_VALIDATE_SIGNATURE=true   # "false" solo para tests locales
 
 # Servidor
 PORT=8000
@@ -1220,7 +1334,7 @@ Solo ejecutar si el usuario confirma que quiere hacer deploy.
       - DATABASE_URL = [Railway te da una si agregas PostgreSQL]
       - [Variables del proveedor elegido — ver abajo]
 
-      Si META:     META_ACCESS_TOKEN, META_PHONE_NUMBER_ID, META_VERIFY_TOKEN
+      Si META:     META_ACCESS_TOKEN, META_PHONE_NUMBER_ID, META_VERIFY_TOKEN, META_APP_SECRET
       Si TWILIO:   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
 
    Paso 4: Configura el webhook
@@ -1322,12 +1436,14 @@ WHATSAPP_PROVIDER=
 # Meta Cloud API (si WHATSAPP_PROVIDER=meta)
 # META_ACCESS_TOKEN=...
 # META_PHONE_NUMBER_ID=...
-# META_VERIFY_TOKEN=agentkit-verify
+# META_VERIFY_TOKEN=...            # Genera uno aleatorio (no uses valores predecibles)
+# META_APP_SECRET=...               # Requerido para validar firma del webhook
 
 # Twilio (si WHATSAPP_PROVIDER=twilio)
 # TWILIO_ACCOUNT_SID=...
 # TWILIO_AUTH_TOKEN=...
 # TWILIO_PHONE_NUMBER=...
+# TWILIO_VALIDATE_SIGNATURE=true
 
 # Servidor
 PORT=8000
