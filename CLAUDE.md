@@ -68,6 +68,7 @@ agentkit/
 ├── agent/
 │   ├── __init__.py        ← Package init
 │   ├── main.py            ← FastAPI app + webhook (provider-agnostic)
+│   ├── security.py        ← Funciones puras de seguridad (testables)
 │   ├── brain.py           ← Conexión Claude API + system prompt desde prompts.yaml
 │   ├── memory.py          ← SQLAlchemy + SQLite, historial por número de teléfono
 │   ├── tools.py           ← Herramientas específicas del negocio del usuario
@@ -82,7 +83,8 @@ agentkit/
 │   └── .gitkeep
 ├── tests/
 │   ├── __init__.py
-│   └── test_local.py      ← Chat interactivo en terminal (simula WhatsApp)
+│   ├── test_local.py      ← Chat interactivo en terminal (simula WhatsApp)
+│   └── test_security.py   ← Tests automáticos de seguridad (pytest)
 ├── requirements.txt       ← Dependencias Python
 ├── Dockerfile             ← Imagen Docker para producción
 ├── docker-compose.yml     ← Orquestación con variables de entorno
@@ -655,11 +657,7 @@ Funciona con cualquier proveedor (Meta, Twilio) gracias a la capa de providers.
 """
 
 import os
-import sys
-import time
 import logging
-import unicodedata
-from collections import OrderedDict, defaultdict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -668,6 +666,13 @@ from dotenv import load_dotenv
 from agent.brain import generar_respuesta
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
+from agent.security import (
+    validar_configuracion,
+    sanitizar_mensaje,
+    ya_procesado,
+    marcar_procesado,
+    rate_limit_excedido,
+)
 
 load_dotenv()
 
@@ -677,111 +682,7 @@ log_level = logging.DEBUG if ENVIRONMENT == "development" else logging.INFO
 logging.basicConfig(level=log_level)
 logger = logging.getLogger("agentkit")
 
-
-def validar_configuracion() -> None:
-    """
-    Falla rápido al arrancar si falta configuración crítica.
-    Mejor un error claro al inicio que respuestas raras en producción.
-    """
-    proveedor = os.getenv("WHATSAPP_PROVIDER", "").lower()
-    requeridas = ["ANTHROPIC_API_KEY", "WHATSAPP_PROVIDER"]
-    if proveedor == "meta":
-        requeridas += ["META_ACCESS_TOKEN", "META_PHONE_NUMBER_ID",
-                       "META_VERIFY_TOKEN", "META_APP_SECRET"]
-    elif proveedor == "twilio":
-        requeridas += ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
-                       "TWILIO_PHONE_NUMBER"]
-
-    faltan = [v for v in requeridas if not os.getenv(v)]
-    if faltan:
-        logger.error(f"Variables faltantes en .env: {', '.join(faltan)}")
-        sys.exit(1)
-
-    # verify_token predecible es vulnerable
-    vt = os.getenv("META_VERIFY_TOKEN", "")
-    if vt and vt in ("agentkit-verify", "verify", "test", "token") or len(vt) < 16:
-        if proveedor == "meta":
-            logger.warning("META_VERIFY_TOKEN es débil. Genera uno aleatorio: "
-                           "python -c 'import secrets;print(secrets.token_urlsafe(32))'")
-
-
 validar_configuracion()
-
-# Proveedor de WhatsApp (se configura en .env con WHATSAPP_PROVIDER)
-proveedor = obtener_proveedor()
-PORT = int(os.getenv("PORT", 8000))
-
-# Límites de entrada — protegen contra abuso y consumo excesivo de tokens
-MAX_LONGITUD_MENSAJE = 4000           # WhatsApp permite hasta 4096; truncamos antes
-RATE_LIMIT_MENSAJES = 10              # mensajes por ventana
-RATE_LIMIT_VENTANA_SEGUNDOS = 60
-
-# Tracker en memoria por número de teléfono.
-# Nota: con múltiples workers cada uno tiene su propio tracker — usar Redis si
-# corre con --workers > 1.
-RATE_LIMIT_TRACKER: dict[str, list[float]] = defaultdict(list)
-
-
-def rate_limit_excedido(telefono: str) -> bool:
-    """True si el número superó el límite de mensajes en la ventana."""
-    ahora = time.time()
-    ventana = RATE_LIMIT_TRACKER[telefono]
-    # Mantener solo timestamps dentro de la ventana
-    ventana[:] = [t for t in ventana if ahora - t < RATE_LIMIT_VENTANA_SEGUNDOS]
-    if len(ventana) >= RATE_LIMIT_MENSAJES:
-        return True
-    ventana.append(ahora)
-    return False
-
-
-def sanitizar_mensaje(texto: str) -> str:
-    """
-    Normaliza Unicode y elimina caracteres de control.
-    NFKC colapsa variantes (homoglyphs, fullwidth) a su forma canónica.
-    Mantenemos \\n y \\t por si el usuario envía mensajes multilínea.
-    """
-    if not texto:
-        return ""
-    if len(texto) > MAX_LONGITUD_MENSAJE:
-        texto = texto[:MAX_LONGITUD_MENSAJE]
-    texto = unicodedata.normalize("NFKC", texto)
-    texto = "".join(
-        c for c in texto
-        if c in ("\n", "\t") or not unicodedata.category(c).startswith("C")
-    )
-    return texto.strip()
-
-
-# Cache de mensajes ya procesados — evita procesar duplicados cuando Meta
-# hace retry del webhook (Meta espera 200 en <20s o reenvía).
-# OrderedDict para FIFO: descartamos los más viejos al alcanzar el límite.
-MENSAJES_PROCESADOS: OrderedDict[str, float] = OrderedDict()
-MENSAJES_PROCESADOS_MAX = 10000
-MENSAJES_PROCESADOS_TTL = 3600  # 1h
-
-
-def ya_procesado(mensaje_id: str) -> bool:
-    """True si el mensaje_id ya fue procesado dentro del TTL."""
-    if not mensaje_id:
-        return False
-    ahora = time.time()
-    # Limpiar entradas expiradas
-    while MENSAJES_PROCESADOS:
-        primer_id = next(iter(MENSAJES_PROCESADOS))
-        if ahora - MENSAJES_PROCESADOS[primer_id] > MENSAJES_PROCESADOS_TTL:
-            MENSAJES_PROCESADOS.popitem(last=False)
-        else:
-            break
-    return mensaje_id in MENSAJES_PROCESADOS
-
-
-def marcar_procesado(mensaje_id: str) -> None:
-    """Registra mensaje_id como procesado, manteniendo el cache acotado."""
-    if not mensaje_id:
-        return
-    MENSAJES_PROCESADOS[mensaje_id] = time.time()
-    while len(MENSAJES_PROCESADOS) > MENSAJES_PROCESADOS_MAX:
-        MENSAJES_PROCESADOS.popitem(last=False)
 
 
 @asynccontextmanager
@@ -877,6 +778,123 @@ async def webhook_handler(request: Request):
     except Exception as e:
         logger.error(f"Error en webhook: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+```
+
+#### 3.4.1 — `agent/security.py`
+
+Módulo con todas las funciones puras de seguridad. Al estar separadas de `main.py`,
+son importables en tests sin side effects (sin arrancar el servidor ni la BD).
+
+```python
+# agent/security.py — Funciones puras de seguridad
+# Generado por AgentKit
+
+import os
+import sys
+import time
+import logging
+import unicodedata
+from collections import OrderedDict, defaultdict
+
+logger = logging.getLogger("agentkit")
+
+# Límites de entrada — protegen contra abuso y consumo excesivo de tokens
+MAX_LONGITUD_MENSAJE = 4000           # WhatsApp permite hasta 4096; truncamos antes
+RATE_LIMIT_MENSAJES = 10              # mensajes por ventana
+RATE_LIMIT_VENTANA_SEGUNDOS = 60
+
+# Tracker en memoria por número de teléfono.
+# Nota: con múltiples workers cada uno tiene su propio tracker — usar Redis si
+# corre con --workers > 1.
+RATE_LIMIT_TRACKER: dict[str, list[float]] = defaultdict(list)
+
+# Cache de mensajes ya procesados — evita procesar duplicados cuando Meta
+# hace retry del webhook (Meta espera 200 en <20s o reenvía).
+# OrderedDict para FIFO: descartamos los más viejos al alcanzar el límite.
+MENSAJES_PROCESADOS: OrderedDict[str, float] = OrderedDict()
+MENSAJES_PROCESADOS_MAX = 10000
+MENSAJES_PROCESADOS_TTL = 3600  # 1h
+
+
+def validar_configuracion() -> None:
+    """
+    Falla rápido al arrancar si falta configuración crítica.
+    Mejor un error claro al inicio que respuestas raras en producción.
+    """
+    proveedor = os.getenv("WHATSAPP_PROVIDER", "").lower()
+    requeridas = ["ANTHROPIC_API_KEY", "WHATSAPP_PROVIDER"]
+    if proveedor == "meta":
+        requeridas += ["META_ACCESS_TOKEN", "META_PHONE_NUMBER_ID",
+                       "META_VERIFY_TOKEN", "META_APP_SECRET"]
+    elif proveedor == "twilio":
+        requeridas += ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
+                       "TWILIO_PHONE_NUMBER"]
+
+    faltan = [v for v in requeridas if not os.getenv(v)]
+    if faltan:
+        logger.error(f"Variables faltantes en .env: {', '.join(faltan)}")
+        sys.exit(1)
+
+    # verify_token predecible es vulnerable
+    vt = os.getenv("META_VERIFY_TOKEN", "")
+    if vt and vt in ("agentkit-verify", "verify", "test", "token") or len(vt) < 16:
+        if proveedor == "meta":
+            logger.warning("META_VERIFY_TOKEN es débil. Genera uno aleatorio: "
+                           "python -c 'import secrets;print(secrets.token_urlsafe(32))'")
+
+
+def rate_limit_excedido(telefono: str) -> bool:
+    """True si el número superó el límite de mensajes en la ventana."""
+    ahora = time.time()
+    ventana = RATE_LIMIT_TRACKER[telefono]
+    # Mantener solo timestamps dentro de la ventana
+    ventana[:] = [t for t in ventana if ahora - t < RATE_LIMIT_VENTANA_SEGUNDOS]
+    if len(ventana) >= RATE_LIMIT_MENSAJES:
+        return True
+    ventana.append(ahora)
+    return False
+
+
+def sanitizar_mensaje(texto: str) -> str:
+    """
+    Normaliza Unicode y elimina caracteres de control.
+    NFKC colapsa variantes (homoglyphs, fullwidth) a su forma canónica.
+    Mantenemos \\n y \\t por si el usuario envía mensajes multilínea.
+    """
+    if not texto:
+        return ""
+    if len(texto) > MAX_LONGITUD_MENSAJE:
+        texto = texto[:MAX_LONGITUD_MENSAJE]
+    texto = unicodedata.normalize("NFKC", texto)
+    texto = "".join(
+        c for c in texto
+        if c in ("\n", "\t") or not unicodedata.category(c).startswith("C")
+    )
+    return texto.strip()
+
+
+def ya_procesado(mensaje_id: str) -> bool:
+    """True si el mensaje_id ya fue procesado dentro del TTL."""
+    if not mensaje_id:
+        return False
+    ahora = time.time()
+    # Limpiar entradas expiradas
+    while MENSAJES_PROCESADOS:
+        primer_id = next(iter(MENSAJES_PROCESADOS))
+        if ahora - MENSAJES_PROCESADOS[primer_id] > MENSAJES_PROCESADOS_TTL:
+            MENSAJES_PROCESADOS.popitem(last=False)
+        else:
+            break
+    return mensaje_id in MENSAJES_PROCESADOS
+
+
+def marcar_procesado(mensaje_id: str) -> None:
+    """Registra mensaje_id como procesado, manteniendo el cache acotado."""
+    if not mensaje_id:
+        return
+    MENSAJES_PROCESADOS[mensaje_id] = time.time()
+    while len(MENSAJES_PROCESADOS) > MENSAJES_PROCESADOS_MAX:
+        MENSAJES_PROCESADOS.popitem(last=False)
 ```
 
 #### 3.5 — `agent/brain.py`
@@ -1290,6 +1308,212 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+#### 3.8.1 — `tests/test_security.py`
+
+Tests automáticos de las funciones de seguridad. Se ejecutan en la Fase 4 antes
+del chat interactivo. Si alguno falla, hay que revisar el código antes de hacer deploy.
+
+```python
+# tests/test_security.py — Tests automáticos de seguridad
+# Generado por AgentKit
+
+"""
+Valida que las defensas de seguridad del agente funcionan correctamente.
+Corre con: pytest tests/test_security.py -v
+"""
+
+import os
+import sys
+import time
+import hmac
+import hashlib
+import base64
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+# ─── Firma Meta (HMAC-SHA256) ────────────────────────────────────────────
+
+class TestFirmaMeta:
+    def setup_method(self):
+        os.environ["META_APP_SECRET"] = "secreto-de-prueba-meta-app-secret-12345"
+        from agent.providers.meta import ProveedorMeta
+        self.proveedor = ProveedorMeta()
+
+    def teardown_method(self):
+        os.environ.pop("META_APP_SECRET", None)
+
+    def _firmar(self, body: bytes, secret: str) -> str:
+        return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+    def test_firma_valida_acepta(self):
+        body = b'{"entry": []}'
+        firma = self._firmar(body, "secreto-de-prueba-meta-app-secret-12345")
+        assert self.proveedor._verificar_firma(body, firma) is True
+
+    def test_firma_invalida_rechaza(self):
+        body = b'{"entry": []}'
+        assert self.proveedor._verificar_firma(body, self._firmar(body, "DIFERENTE")) is False
+
+    def test_firma_vacia_rechaza(self):
+        assert self.proveedor._verificar_firma(b'{}', "") is False
+
+    def test_body_modificado_rechaza(self):
+        body_original = b'{"mensaje": "hola"}'
+        body_modificado = b'{"mensaje": "transferir todo"}'
+        firma = self._firmar(body_original, "secreto-de-prueba-meta-app-secret-12345")
+        assert self.proveedor._verificar_firma(body_modificado, firma) is False
+
+    def test_sin_app_secret_rechaza(self):
+        os.environ.pop("META_APP_SECRET", None)
+        from agent.providers.meta import ProveedorMeta
+        proveedor = ProveedorMeta()
+        firma = self._firmar(b'{}', "cualquier-cosa")
+        assert proveedor._verificar_firma(b'{}', firma) is False
+
+
+# ─── Firma Twilio (HMAC-SHA1) ────────────────────────────────────────────
+
+class TestFirmaTwilio:
+    def setup_method(self):
+        os.environ["TWILIO_AUTH_TOKEN"] = "auth-token-de-prueba-twilio-12345"
+        from agent.providers.twilio import ProveedorTwilio
+        self.proveedor = ProveedorTwilio()
+
+    def teardown_method(self):
+        os.environ.pop("TWILIO_AUTH_TOKEN", None)
+
+    def _firmar(self, url: str, params: dict, token: str) -> str:
+        cadena = url + "".join(k + params[k] for k in sorted(params))
+        return base64.b64encode(
+            hmac.new(token.encode(), cadena.encode(), hashlib.sha1).digest()
+        ).decode()
+
+    def test_firma_valida_acepta(self):
+        url = "https://example.com/webhook"
+        params = {"Body": "hola", "From": "whatsapp:+5491100000000", "MessageSid": "SM1"}
+        firma = self._firmar(url, params, "auth-token-de-prueba-twilio-12345")
+        assert self.proveedor._verificar_firma(url, params, firma) is True
+
+    def test_firma_invalida_rechaza(self):
+        url = "https://example.com/webhook"
+        params = {"Body": "hola"}
+        assert self.proveedor._verificar_firma(url, params, self._firmar(url, params, "MAL")) is False
+
+    def test_url_modificada_rechaza(self):
+        params = {"Body": "hola"}
+        firma = self._firmar("https://bueno.com/webhook", params, "auth-token-de-prueba-twilio-12345")
+        assert self.proveedor._verificar_firma("https://malo.com/webhook", params, firma) is False
+
+    def test_param_modificado_rechaza(self):
+        url = "https://example.com/webhook"
+        firma = self._firmar(url, {"Body": "original"}, "auth-token-de-prueba-twilio-12345")
+        assert self.proveedor._verificar_firma(url, {"Body": "modificado"}, firma) is False
+
+    def test_firma_vacia_rechaza(self):
+        assert self.proveedor._verificar_firma("https://x.com", {}, "") is False
+
+
+# ─── Idempotencia ────────────────────────────────────────────────────────
+
+class TestIdempotencia:
+    def setup_method(self):
+        from agent.security import MENSAJES_PROCESADOS
+        MENSAJES_PROCESADOS.clear()
+
+    def test_mensaje_nuevo_no_esta_procesado(self):
+        from agent.security import ya_procesado
+        assert ya_procesado("MSG-001") is False
+
+    def test_mensaje_marcado_se_detecta(self):
+        from agent.security import ya_procesado, marcar_procesado
+        marcar_procesado("MSG-001")
+        assert ya_procesado("MSG-001") is True
+
+    def test_id_vacio_devuelve_false(self):
+        from agent.security import ya_procesado
+        assert ya_procesado("") is False
+        assert ya_procesado(None) is False
+
+    def test_cache_acotado_al_maximo(self):
+        from agent.security import marcar_procesado, MENSAJES_PROCESADOS, MENSAJES_PROCESADOS_MAX
+        for i in range(MENSAJES_PROCESADOS_MAX + 100):
+            marcar_procesado(f"MSG-{i}")
+        assert len(MENSAJES_PROCESADOS) <= MENSAJES_PROCESADOS_MAX
+
+    def test_entradas_expiradas_se_limpian(self):
+        from agent.security import ya_procesado, MENSAJES_PROCESADOS, MENSAJES_PROCESADOS_TTL
+        MENSAJES_PROCESADOS["VIEJO"] = time.time() - MENSAJES_PROCESADOS_TTL - 10
+        ya_procesado("NUEVO")  # dispara limpieza
+        assert "VIEJO" not in MENSAJES_PROCESADOS
+
+
+# ─── Sanitización ────────────────────────────────────────────────────────
+
+class TestSanitizacion:
+    def test_texto_normal_pasa(self):
+        from agent.security import sanitizar_mensaje
+        assert sanitizar_mensaje("Hola, ¿cómo estás?") == "Hola, ¿cómo estás?"
+
+    def test_trunca_a_max_longitud(self):
+        from agent.security import sanitizar_mensaje, MAX_LONGITUD_MENSAJE
+        assert len(sanitizar_mensaje("a" * (MAX_LONGITUD_MENSAJE + 500))) <= MAX_LONGITUD_MENSAJE
+
+    def test_elimina_caracteres_de_control(self):
+        from agent.security import sanitizar_mensaje
+        assert sanitizar_mensaje("hola\x00mundo") == "holamundo"
+        assert sanitizar_mensaje("test\x1bcommand") == "testcommand"
+
+    def test_elimina_zero_width_chars(self):
+        from agent.security import sanitizar_mensaje
+        texto_con_zwsp = "hola​mundo"  # zero-width space
+        assert "​" not in sanitizar_mensaje(texto_con_zwsp)
+
+    def test_preserva_newlines_y_tabs(self):
+        from agent.security import sanitizar_mensaje
+        assert sanitizar_mensaje("linea1\nlinea2") == "linea1\nlinea2"
+        assert sanitizar_mensaje("col1\tcol2") == "col1\tcol2"
+
+    def test_nfkc_normaliza_homoglyphs(self):
+        from agent.security import sanitizar_mensaje
+        assert sanitizar_mensaje("ＡＢＣ") == "ABC"  # fullwidth → ASCII
+
+    def test_vacio_devuelve_vacio(self):
+        from agent.security import sanitizar_mensaje
+        assert sanitizar_mensaje("") == ""
+        assert sanitizar_mensaje(None) == ""
+
+
+# ─── Rate Limiting ───────────────────────────────────────────────────────
+
+class TestRateLimit:
+    def setup_method(self):
+        from agent.security import RATE_LIMIT_TRACKER
+        RATE_LIMIT_TRACKER.clear()
+
+    def test_primer_mensaje_pasa(self):
+        from agent.security import rate_limit_excedido
+        assert rate_limit_excedido("5491100000000") is False
+
+    def test_dentro_del_limite_pasa(self):
+        from agent.security import rate_limit_excedido, RATE_LIMIT_MENSAJES
+        for _ in range(RATE_LIMIT_MENSAJES):
+            assert rate_limit_excedido("5491100000000") is False
+
+    def test_superar_limite_bloquea(self):
+        from agent.security import rate_limit_excedido, RATE_LIMIT_MENSAJES
+        for _ in range(RATE_LIMIT_MENSAJES):
+            rate_limit_excedido("5491100000000")
+        assert rate_limit_excedido("5491100000000") is True
+
+    def test_limite_es_independiente_por_telefono(self):
+        from agent.security import rate_limit_excedido, RATE_LIMIT_MENSAJES
+        for _ in range(RATE_LIMIT_MENSAJES):
+            rate_limit_excedido("5491100000000")
+        assert rate_limit_excedido("5491199999999") is False
+```
+
 #### 3.9 — Archivos de infraestructura
 
 **`.env` (generado, NUNCA va a GitHub):**
@@ -1373,19 +1597,33 @@ dentro de `config/prompts.yaml`, en la sección "Información del negocio".
 
 ### FASE 4 — Testing local
 
-1. **Arrancar el servidor:**
+1. **Instalar dependencias de test (solo la primera vez):**
+   ```bash
+   pip install pytest
+   ```
+
+2. **Correr los tests de seguridad automáticos:**
+   ```bash
+   pytest tests/test_security.py -v
+   ```
+
+   - Si algún test **falla**: algo en el código de seguridad no funciona como se espera.
+     Revisar el error antes de continuar — NO hacer deploy con tests fallando.
+   - Si todos **pasan**: las defensas de seguridad están activas y funcionando.
+
+3. **Arrancar el servidor:**
    ```bash
    uvicorn agent.main:app --reload --port 8000
    ```
 
-2. **En otra terminal (o después de parar el servidor), ejecutar el test:**
+4. **En otra terminal (o después de parar el servidor), ejecutar el chat de prueba:**
    ```bash
    python tests/test_local.py
    ```
 
-3. **El test simula un chat** — el usuario escribe mensajes como cliente y ve las respuestas del agente
+5. **El test simula un chat** — el usuario escribe mensajes como cliente y ve las respuestas del agente
 
-4. **Evaluar con el usuario:**
+6. **Evaluar con el usuario:**
    ```
    ¿Tu agente responde como esperabas? (si/no)
    ```
@@ -1393,7 +1631,7 @@ dentro de `config/prompts.yaml`, en la sección "Información del negocio".
    - Si **NO**: Preguntar qué ajustar, modificar `config/prompts.yaml` y repetir
    - Si **SÍ**: Continuar a Fase 5
 
-5. **Mostrar mensaje:**
+7. **Mostrar mensaje:**
    ```
    Fase 4 completada — Agente probado y aprobado
 
@@ -1520,15 +1758,16 @@ Solo ejecutar si el usuario confirma que quiere hacer deploy.
    - Docker Compose para producción
 
    Archivos generados:
-   - agent/main.py, brain.py, memory.py, tools.py, providers/
+   - agent/main.py, security.py, brain.py, memory.py, tools.py, providers/
    - config/business.yaml, prompts.yaml
-   - tests/test_local.py
+   - tests/test_local.py, tests/test_security.py
    - Dockerfile, docker-compose.yml, .env
 
    Comandos útiles:
-   - Test local:     python tests/test_local.py
-   - Arrancar:       uvicorn agent.main:app --reload --port 8000
-   - Docker:         docker compose up --build
+   - Tests seguridad: pytest tests/test_security.py -v
+   - Test local:      python tests/test_local.py
+   - Arrancar:        uvicorn agent.main:app --reload --port 8000
+   - Docker:          docker compose up --build
 
    ¿Necesitas ajustar algo? Escríbeme en cualquier momento.
    ===========================================================
