@@ -41,16 +41,20 @@ Cuando generes el agente, SIEMPRE usa estas tecnologías:
 | Deploy | Railway | Un clic desde GitHub |
 
 **Dependencias Python (requirements.txt):**
+
+Pineamos rangos con upper bound para que un major release con cambios
+incompatibles no rompa el agente en una rebuild de Railway.
+
 ```
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-anthropic>=0.40.0
-httpx>=0.25.0
-python-dotenv>=1.0.0
-sqlalchemy>=2.0.0
-pyyaml>=6.0.1
-aiosqlite>=0.19.0
-python-multipart>=0.0.6
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.32.0,<1.0.0
+anthropic>=0.40.0,<1.0.0
+httpx>=0.27.0,<1.0.0
+python-dotenv>=1.0.1,<2.0.0
+sqlalchemy>=2.0.36,<3.0.0
+pyyaml>=6.0.2,<7.0.0
+aiosqlite>=0.20.0,<1.0.0
+python-multipart>=0.0.18,<1.0.0
 ```
 
 ---
@@ -526,11 +530,17 @@ class ProveedorMeta(ProveedorWhatsApp):
             "type": "text",
             "text": {"body": mensaje},
         }
-        async with httpx.AsyncClient() as client:
-            r = await client.post(url, json=payload, headers=headers)
-            if r.status_code != 200:
-                logger.error(f"Error Meta API: {r.status_code} — {r.text}")
-            return r.status_code == 200
+        # Timeout explícito: si Meta cuelga no queremos bloquear el webhook
+        timeout = httpx.Timeout(10.0, connect=5.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(url, json=payload, headers=headers)
+                if r.status_code != 200:
+                    logger.error(f"Error Meta API: {r.status_code} — {r.text}")
+                return r.status_code == 200
+        except httpx.HTTPError as e:
+            logger.error(f"Error de red enviando a Meta: {e}")
+            return False
 ```
 
 **`agent/providers/twilio.py`** (si eligió Twilio):
@@ -618,11 +628,17 @@ class ProveedorTwilio(ProveedorWhatsApp):
             "To": f"whatsapp:{telefono}",
             "Body": mensaje,
         }
-        async with httpx.AsyncClient() as client:
-            r = await client.post(url, data=data, headers=headers)
-            if r.status_code != 201:
-                logger.error(f"Error Twilio: {r.status_code} — {r.text}")
-            return r.status_code == 201
+        # Timeout explícito: si Twilio cuelga no queremos bloquear el webhook
+        timeout = httpx.Timeout(10.0, connect=5.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(url, data=data, headers=headers)
+                if r.status_code != 201:
+                    logger.error(f"Error Twilio: {r.status_code} — {r.text}")
+                return r.status_code == 201
+        except httpx.HTTPError as e:
+            logger.error(f"Error de red enviando a Twilio: {e}")
+            return False
 ```
 
 #### 3.4 — `agent/main.py`
@@ -1313,11 +1329,23 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 **`Dockerfile`:**
 ```dockerfile
 FROM python:3.11-slim
+
+# Usuario no-root: si alguien comprometiera el contenedor no tendría root
+RUN useradd --create-home --uid 1000 agentkit
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY --chown=agentkit:agentkit . .
+
+USER agentkit
+
 EXPOSE 8000
+
+# Healthcheck para Railway/Docker — verifica que el server responde
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/').status == 200 else 1)"
+
 CMD ["uvicorn", "agent.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
