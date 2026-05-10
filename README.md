@@ -364,6 +364,21 @@ Construido con [Claude Code](https://claude.ai/claude-code) para builders de LAT
 
 ---
 
+## Fork y mejoras de seguridad
+
+Fork mantenido por **Jonathan Flores** — [vanguardcrux.com](https://www.vanguardcrux.com/)
+
+Mejoras incluidas en este fork:
+- Validación de firma HMAC en webhooks de Meta y Twilio (previene spoofing)
+- Idempotencia de mensajes (evita respuestas duplicadas por retries)
+- Rate limiting por número de teléfono
+- Sanitización Unicode contra prompt injection
+- Módulo `agent/security.py` con funciones puras y 27 tests automáticos
+- Validación de variables de entorno al arrancar
+- Docker non-root, timeouts HTTP, dependency pinning
+
+---
+
 ## Licencia
 
 MIT — Usa este proyecto como quieras, para lo que quieras.
