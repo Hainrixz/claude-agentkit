@@ -777,7 +777,8 @@ async def webhook_handler(request: Request):
 
     except Exception as e:
         logger.error(f"Error en webhook: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        detail = str(e) if ENVIRONMENT == "development" else "Error interno"
+        raise HTTPException(status_code=500, detail=detail)
 ```
 
 #### 3.4.1 — `agent/security.py`
