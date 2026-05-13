@@ -9,6 +9,7 @@ y genera respuestas usando la API de Anthropic Claude.
 import os
 import yaml
 import logging
+from datetime import datetime, timezone, timedelta
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
@@ -68,6 +69,11 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         return obtener_mensaje_fallback()
 
     system_prompt = cargar_system_prompt()
+
+    # Inyectar hora actual de Argentina para que Sofia salude correctamente
+    tz_ar = timezone(timedelta(hours=-3))
+    hora_ar = datetime.now(tz_ar).strftime("%H:%M")
+    system_prompt = f"[Hora actual en Argentina: {hora_ar}]\n\n" + system_prompt
 
     # Construir mensajes para la API
     mensajes = []
