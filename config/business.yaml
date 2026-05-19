@@ -1,0 +1,32 @@
+# Configuración del negocio — Generado por AgentKit
+negocio:
+  nombre: "HELIX · AI — Agencia de Crecimiento Digital e IA"
+  descripcion: |
+    Agencia especializada en soluciones de crecimiento digital e implementación de
+    inteligencia artificial para automatizar procesos operativos. Trabaja con empresas
+    B2B, e-commerce, consultorías y negocios que buscan escalar mediante tecnología y
+    reducir costos operativos.
+
+    Cuatro pilares de servicios:
+    1. Estrategia e Identidad — Branding y posicionamiento de marca
+    2. Crecimiento Digital — Marketing estratégico y generación de contenido con IA
+    3. Automatización IA — Agentes de IA para atención al cliente, calificación de leads y agendamiento
+    4. Infraestructura Web — Ecosistemas digitales integrados
+
+    Resultado clave: Las empresas que implementan las soluciones de HELIX · AI
+    recuperan en promedio 3 horas/día en tareas manuales repetitivas.
+  horario: "Lunes a Viernes de 8:00 a 18:00 hs"
+
+agente:
+  nombre: "Sofía"
+  tono: "amigable_empatico"
+  casos_de_uso:
+    - "Responder preguntas frecuentes sobre planes, costos, implementación y resultados"
+    - "Calificar leads y agendar reuniones de diagnóstico automáticamente 24/7"
+    - "Soporte inmediato sobre servicios y procesos de HELIX · AI"
+    - "Auditoría inicial de crecimiento (diagnóstico de entrada)"
+    - "Seguimiento de clientes y gestión de interés en los servicios"
+
+metadata:
+  creado: "2026-05-19"
+  version: "1.0"
