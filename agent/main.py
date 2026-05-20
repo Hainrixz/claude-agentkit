@@ -1,5 +1,7 @@
 # agent/main.py — Servidor FastAPI + Webhook de WhatsApp — HELIX · AI
 import os
+import asyncio
+import random
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
@@ -92,8 +94,34 @@ async def webhook_handler(request: Request):
             await guardar_mensaje(msg.telefono, "user", msg.texto)
             await guardar_mensaje(msg.telefono, "assistant", respuesta)
 
-            await proveedor.enviar_mensaje(msg.telefono, respuesta)
-            logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
+            # Partir en bloques si hay párrafos dobles o la respuesta es larga
+            bloques = [b.strip() for b in respuesta.split("\n\n") if b.strip()]
+            if len(bloques) == 1 and len(respuesta) > 280:
+                # Partir por oraciones si no hay saltos de párrafo
+                import re
+                partes = re.split(r'(?<=[.!?])\s+', respuesta)
+                bloques = []
+                actual = ""
+                for parte in partes:
+                    if len(actual) + len(parte) < 280:
+                        actual = (actual + " " + parte).strip()
+                    else:
+                        if actual:
+                            bloques.append(actual)
+                        actual = parte
+                if actual:
+                    bloques.append(actual)
+
+            for i, bloque in enumerate(bloques):
+                # Delay humano: más largo para el primer mensaje, más corto entre bloques
+                if i == 0:
+                    delay = min(2 + len(bloque) / 80, 8) + random.uniform(0, 1.5)
+                else:
+                    delay = random.uniform(1.5, 3)
+                await asyncio.sleep(delay)
+                await proveedor.enviar_mensaje(msg.telefono, bloque)
+
+            logger.info(f"Respuesta a {msg.telefono} ({len(bloques)} bloque/s): {respuesta[:80]}...")
 
         return {"status": "ok"}
 
