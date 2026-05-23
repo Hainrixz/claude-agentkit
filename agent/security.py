@@ -22,7 +22,7 @@ MENSAJES_PROCESADOS_TTL = 3600
 def validar_configuracion() -> None:
     """Falla rápido al arrancar si falta configuración crítica."""
     proveedor = os.getenv("WHATSAPP_PROVIDER", "").lower()
-    requeridas = ["ANTHROPIC_API_KEY", "WHATSAPP_PROVIDER"]
+    requeridas = ["LLM_API_KEY", "LLM_MODEL", "WHATSAPP_PROVIDER"]
     if proveedor == "meta":
         requeridas += ["META_ACCESS_TOKEN", "META_PHONE_NUMBER_ID",
                        "META_VERIFY_TOKEN", "META_APP_SECRET"]
