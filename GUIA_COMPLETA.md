@@ -1,8 +1,8 @@
 # Agente de WhatsApp con IA — Documentación técnica completa
 
-**Última actualización:** 22 de mayo de 2026
-**Estado:** Funcional en sandbox de Twilio, pendiente de producción
-**Stack:** Python + FastAPI + Uvicorn + Anthropic Claude + Twilio WhatsApp + Railway
+**Última actualización:** 2 de junio de 2026
+**Estado:** En producción en Railway con fallback multi-proveedor LLM activo
+**Stack:** Python + FastAPI + Uvicorn + LiteLLM (Claude / Groq / Gemini / OpenAI) + Twilio WhatsApp + Railway
 
 ---
 
@@ -45,8 +45,15 @@ pip install -r requirements.txt
 ### 2.3. Crear el archivo .env
 
 ```env
-# Anthropic API
-ANTHROPIC_API_KEY=sk-ant-...
+# LLM — Modelo primario (LiteLLM detecta las keys por nombre estándar)
+LLM_MODEL=anthropic/claude-sonnet-4-6
+
+# Keys de proveedores LLM (agrega las que tengas; el fallback usa las disponibles)
+ANTHROPIC_API_KEY=sk-ant-...          # platform.anthropic.com
+GROQ_API_KEY=gsk_...                  # console.groq.com/keys (tier gratis disponible)
+GEMINI_API_KEY=AIza...                # aistudio.google.com (tier gratis disponible)
+OPENAI_API_KEY=sk-...                 # platform.openai.com (opcional)
+PERPLEXITYAI_API_KEY=pplx-...         # perplexity.ai (opcional, va al final del fallback)
 
 # Proveedor de WhatsApp
 WHATSAPP_PROVIDER=twilio
@@ -54,8 +61,8 @@ WHATSAPP_PROVIDER=twilio
 # Twilio
 TWILIO_ACCOUNT_SID=AC...
 TWILIO_AUTH_TOKEN=...
-TWILIO_PHONE_NUMBER=+1...           # SIN el prefijo whatsapp: (el código lo agrega solo)
-TWILIO_VALIDATE_SIGNATURE=false     # false para tests locales, true en producción
+TWILIO_PHONE_NUMBER=+1...             # SIN el prefijo whatsapp: (el código lo agrega solo)
+TWILIO_VALIDATE_SIGNATURE=false       # false para tests locales, true en producción
 
 # Servidor
 PORT=8000
@@ -67,8 +74,12 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 
 **Dónde conseguir cada credencial:**
 - `ANTHROPIC_API_KEY`: platform.anthropic.com → Settings → API Keys → Create Key
+- `GROQ_API_KEY`: console.groq.com/keys (gratis, sin tarjeta de crédito)
+- `GEMINI_API_KEY`: aistudio.google.com → Get API Key (gratis)
 - `TWILIO_ACCOUNT_SID` y `TWILIO_AUTH_TOKEN`: console.twilio.com → Dashboard
 - `TWILIO_PHONE_NUMBER`: Twilio Console → Phone Numbers (solo el número, sin prefijo)
+
+**Nota:** No necesitás todas las keys. El agente funciona con solo `ANTHROPIC_API_KEY`. Cada key adicional agrega un nivel de resiliencia: si Anthropic falla, LiteLLM salta al siguiente proveedor disponible.
 
 ### 2.4. Configuración de Twilio Sandbox (modo desarrollo)
 
@@ -133,7 +144,12 @@ Ngrok genera una URL pública tipo `https://abc123.ngrok.io` que Twilio puede us
 
 | Variable | Valor | Notas |
 |---|---|---|
+| `LLM_MODEL` | `anthropic/claude-sonnet-4-6` | Modelo primario |
 | `ANTHROPIC_API_KEY` | `sk-ant-...` | De Anthropic Console |
+| `GROQ_API_KEY` | `gsk_...` | Fallback 1 — console.groq.com (gratis) |
+| `GEMINI_API_KEY` | `AIza...` | Fallback 2 — aistudio.google.com (gratis) |
+| `OPENAI_API_KEY` | `sk-...` | Fallback 3 — opcional |
+| `PERPLEXITYAI_API_KEY` | `pplx-...` | Fallback 4 — opcional, va al final |
 | `TWILIO_ACCOUNT_SID` | `ACxxxxxxxx...` | De Twilio Console |
 | `TWILIO_AUTH_TOKEN` | `xxxxxxxx...` | De Twilio Console |
 | `TWILIO_PHONE_NUMBER` | `+14155238886` | Sin el prefijo `whatsapp:` — el código lo agrega solo |
@@ -142,6 +158,8 @@ Ngrok genera una URL pública tipo `https://abc123.ngrok.io` que Twilio puede us
 | `DATABASE_URL` | `postgresql://...` | Railway lo inyecta automáticamente si agregás PostgreSQL |
 | `ENVIRONMENT` | `production` | Para logging y comportamiento condicional |
 | `PORT` | `8000` | Railway lo inyecta solo, no hace falta setear |
+
+**Cómo funciona el fallback de LLMs:** LiteLLM detecta las keys por su nombre estándar. Si `ANTHROPIC_API_KEY` responde con `overloaded_error`, LiteLLM reintenta 2 veces y luego salta automáticamente a Groq, luego Gemini, etc. Sin intervención manual.
 
 **Punto crítico:** el código agrega `whatsapp:` automáticamente al construir el `From`. Si `TWILIO_PHONE_NUMBER` ya tiene el prefijo, termina enviando `whatsapp:whatsapp:+14155238886` → Twilio error 21212 ("Invalid From Number").
 
@@ -195,7 +213,7 @@ whatsapp-agentkit/
 ```
 fastapi>=0.115.0,<1.0.0
 uvicorn[standard]>=0.32.0,<1.0.0
-anthropic>=0.40.0,<1.0.0
+litellm>=1.51.0,<2.0.0          # abstracción multi-proveedor LLM con fallback
 httpx>=0.27.0,<1.0.0
 python-dotenv>=1.0.1,<2.0.0
 sqlalchemy>=2.0.36,<3.0.0
@@ -303,6 +321,7 @@ Causas posibles en orden de probabilidad:
 | Railway no encontraba los archivos del agente | `.gitignore` del template excluía `agent/`, `config/`, etc. | Reemplazar `.gitignore` por versión de producción al hacer deploy |
 | Deploy crasheaba en Railway | `DATABASE_URL` apuntaba a ruta relativa sin permisos | Usar `/tmp/agentkit.db` o agregar PostgreSQL |
 | Agente no enviaba mensajes (error 21212) | `TWILIO_PHONE_NUMBER` tenía prefijo `whatsapp:` | El código ya agrega el prefijo; la variable debe tener solo el número |
+| Agente quedaba mudo con `overloaded_error` de Anthropic | API saturada sin fallback configurado | Implementar fallback multi-proveedor en `brain.py` via LiteLLM |
 
 ---
 
@@ -335,12 +354,15 @@ Causas posibles en orden de probabilidad:
 
 | Servicio | Costo aproximado |
 |---|---|
-| Anthropic Claude Sonnet | ~$3 por millón de tokens de entrada, ~$15 por millón de salida |
+| Anthropic Claude Sonnet (primario) | ~$3 por millón de tokens de entrada, ~$15 por millón de salida |
+| Groq / LLaMA (fallback 1) | Tier gratuito generoso; ~$0.05-0.10 por millón en paid |
+| Gemini (fallback 2) | Tier gratuito disponible; ~$0.075 por millón en paid |
+| OpenAI GPT-4o (fallback 3) | ~$2.50 por millón de tokens de entrada |
 | Twilio WhatsApp | ~$0.005 por mensaje enviado (más costo del número) |
 | Railway Hobby | $5/mes. Plan Pro: $20/mes |
 | **Total para testing** | Menos de $10/mes con volumen bajo |
 
-Para 1.000 conversaciones por mes, el costo total estimado es entre $15-40 USD dependiendo de la longitud de las conversaciones.
+Para 1.000 conversaciones por mes, el costo total estimado es entre $15-40 USD dependiendo de la longitud de las conversaciones. Con fallback activo, los picos de carga o saturación de Anthropic se absorben automáticamente sin costo adicional significativo (Groq y Gemini son muy baratos en comparación).
 
 ---
 
@@ -354,6 +376,9 @@ Para 1.000 conversaciones por mes, el costo total estimado es entre $15-40 USD d
 - [ ] Número de WhatsApp real aprobado por Meta/Twilio
 - [ ] PostgreSQL configurado en Railway
 - [ ] Variables de entorno en Railway completas y correctas
+- [ ] `ANTHROPIC_API_KEY` configurada (modelo primario)
+- [ ] Al menos una key de fallback configurada (`GROQ_API_KEY` o `GEMINI_API_KEY`)
+- [ ] `LLM_MODEL` configurado (ej: `anthropic/claude-sonnet-4-6`)
 - [ ] `ENVIRONMENT=production` en Railway
 - [ ] `TWILIO_VALIDATE_SIGNATURE=true` funcionando correctamente
 - [ ] `TWILIO_PHONE_NUMBER` sin prefijo `whatsapp:`
