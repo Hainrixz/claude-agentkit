@@ -1,0 +1,427 @@
+# Agente de WhatsApp con IA — Documentación técnica completa
+
+**Última actualización:** 2 de junio de 2026
+**Estado:** En producción en Railway con fallback multi-proveedor LLM activo
+**Stack:** Python + FastAPI + Uvicorn + LiteLLM (Claude / Groq / Gemini / OpenAI) + Twilio WhatsApp + Railway
+
+---
+
+## 1. Arquitectura general
+
+El sistema es un servidor HTTP que actúa como puente entre WhatsApp (vía Twilio) y Claude (Anthropic).
+
+### Flujo de un mensaje
+
+1. El usuario escribe a un número de WhatsApp desde su celular
+2. WhatsApp entrega el mensaje a Twilio
+3. Twilio hace un POST al endpoint `/webhook` del servidor en Railway
+4. El servidor procesa el mensaje, lo guarda en base de datos, y se lo pasa a Claude
+5. Claude genera la respuesta usando el system prompt del agente
+6. El servidor aplica delay humano y opcionalmente parte la respuesta en varios mensajes
+7. El servidor llama a la API de Twilio con el texto
+8. Twilio entrega el mensaje al WhatsApp del usuario
+
+Si cualquiera de esos 8 pasos falla, el mensaje no llega. La parte más frágil es el paso 7 (formato del `From` y validación de canal en Twilio).
+
+---
+
+## 2. Setup desde cero
+
+### 2.1. Cuentas necesarias
+
+- **GitHub** — repositorio del código
+- **Anthropic Console** (console.anthropic.com) — para obtener la API key de Claude
+- **Twilio** (twilio.com) — cuenta gratuita alcanza para sandbox; necesaria upgrade para producción
+- **Railway** (railway.com) — hosting del servidor, plan Hobby alcanza para empezar
+
+### 2.2. Clonar el repositorio
+
+```bash
+git clone https://github.com/jon-human-in-the-loop/whatsapp-agentkit.git
+cd whatsapp-agentkit
+pip install -r requirements.txt
+```
+
+### 2.3. Crear el archivo .env
+
+```env
+# LLM — Modelo primario (LiteLLM detecta las keys por nombre estándar)
+LLM_MODEL=anthropic/claude-sonnet-4-6
+
+# Keys de proveedores LLM (agrega las que tengas; el fallback usa las disponibles)
+ANTHROPIC_API_KEY=sk-ant-...          # platform.anthropic.com
+GROQ_API_KEY=gsk_...                  # console.groq.com/keys (tier gratis disponible)
+GEMINI_API_KEY=AIza...                # aistudio.google.com (tier gratis disponible)
+OPENAI_API_KEY=sk-...                 # platform.openai.com (opcional)
+PERPLEXITYAI_API_KEY=pplx-...         # perplexity.ai (opcional, va al final del fallback)
+
+# Proveedor de WhatsApp
+WHATSAPP_PROVIDER=twilio
+
+# Twilio
+TWILIO_ACCOUNT_SID=AC...
+TWILIO_AUTH_TOKEN=...
+TWILIO_PHONE_NUMBER=+1...             # SIN el prefijo whatsapp: (el código lo agrega solo)
+TWILIO_VALIDATE_SIGNATURE=false       # false para tests locales, true en producción
+
+# Servidor
+PORT=8000
+ENVIRONMENT=development
+
+# Base de datos
+DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
+```
+
+**Dónde conseguir cada credencial:**
+- `ANTHROPIC_API_KEY`: platform.anthropic.com → Settings → API Keys → Create Key
+- `GROQ_API_KEY`: console.groq.com/keys (gratis, sin tarjeta de crédito)
+- `GEMINI_API_KEY`: aistudio.google.com → Get API Key (gratis)
+- `TWILIO_ACCOUNT_SID` y `TWILIO_AUTH_TOKEN`: console.twilio.com → Dashboard
+- `TWILIO_PHONE_NUMBER`: Twilio Console → Phone Numbers (solo el número, sin prefijo)
+
+**Nota:** No necesitás todas las keys. El agente funciona con solo `ANTHROPIC_API_KEY`. Cada key adicional agrega un nivel de resiliencia: si Anthropic falla, LiteLLM salta al siguiente proveedor disponible.
+
+### 2.4. Configuración de Twilio Sandbox (modo desarrollo)
+
+Twilio ofrece un sandbox gratuito de WhatsApp. El número del sandbox es `+1 415 523 8886`.
+
+1. Iniciar sesión en Twilio Console
+2. Ir a Messaging → Try it out → Send a WhatsApp message
+3. Anotar el código de unión (formato `join <dos-palabras>`, ej: `join run-chance`)
+4. Desde tu WhatsApp personal, enviar ese código al `+1 415 523 8886`
+5. Tu número queda registrado como participante del sandbox
+
+**Limitaciones del sandbox:**
+- Cada persona que quiera hablar con el bot tiene que enviar el `join` primero
+- El número es compartido, no exclusivo
+- No sirve para producción comercial
+
+### 2.5. Probar el agente en terminal (sin WhatsApp)
+
+```bash
+python tests/test_local.py
+```
+
+Esto abre un chat interactivo donde podés escribir como cliente y ver las respuestas del agente.
+Comandos: `limpiar` borra el historial, `salir` cierra el test.
+
+### 2.6. Correr los tests de seguridad
+
+```bash
+python3 -m pytest tests/test_security.py -v
+```
+
+Deben pasar los 21 tests. Si alguno falla, revisar el código antes de hacer deploy.
+
+### 2.7. Arrancar el servidor localmente
+
+```bash
+uvicorn agent.main:app --reload --port 8000
+```
+
+Para exponer el webhook al exterior durante desarrollo local, usar ngrok:
+
+```bash
+ngrok http 8000
+```
+
+Ngrok genera una URL pública tipo `https://abc123.ngrok.io` que Twilio puede usar como webhook temporal.
+
+---
+
+## 3. Deploy en Railway
+
+### 3.1. Pasos
+
+1. Ir a railway.app → New Project → Deploy from GitHub repo
+2. Conectar la cuenta de GitHub y seleccionar el repositorio
+3. Railway detecta automáticamente el builder (Railpack v0.23.0)
+4. Cargar las variables de entorno (ver tabla abajo)
+5. Deploy automático en cada push a `main`
+6. Railway genera una URL pública del tipo `https://TU-APP-production-xxxx.up.railway.app`
+
+### 3.2. Variables de entorno en Railway
+
+| Variable | Valor | Notas |
+|---|---|---|
+| `LLM_MODEL` | `anthropic/claude-sonnet-4-6` | Modelo primario |
+| `ANTHROPIC_API_KEY` | `sk-ant-...` | De Anthropic Console |
+| `GROQ_API_KEY` | `gsk_...` | Fallback 1 — console.groq.com (gratis) |
+| `GEMINI_API_KEY` | `AIza...` | Fallback 2 — aistudio.google.com (gratis) |
+| `OPENAI_API_KEY` | `sk-...` | Fallback 3 — opcional |
+| `PERPLEXITYAI_API_KEY` | `pplx-...` | Fallback 4 — opcional, va al final |
+| `TWILIO_ACCOUNT_SID` | `ACxxxxxxxx...` | De Twilio Console |
+| `TWILIO_AUTH_TOKEN` | `xxxxxxxx...` | De Twilio Console |
+| `TWILIO_PHONE_NUMBER` | `+14155238886` | Sin el prefijo `whatsapp:` — el código lo agrega solo |
+| `TWILIO_VALIDATE_SIGNATURE` | `false` (sandbox) / `true` (prod) | Ver nota abajo |
+| `WHATSAPP_PROVIDER` | `twilio` | Permite intercambiar proveedor en el futuro |
+| `DATABASE_URL` | `postgresql://...` | Railway lo inyecta automáticamente si agregás PostgreSQL |
+| `ENVIRONMENT` | `production` | Para logging y comportamiento condicional |
+| `PORT` | `8000` | Railway lo inyecta solo, no hace falta setear |
+
+**Cómo funciona el fallback de LLMs:** LiteLLM detecta las keys por su nombre estándar. Si `ANTHROPIC_API_KEY` responde con `overloaded_error`, LiteLLM reintenta 2 veces y luego salta automáticamente a Groq, luego Gemini, etc. Sin intervención manual.
+
+**Punto crítico:** el código agrega `whatsapp:` automáticamente al construir el `From`. Si `TWILIO_PHONE_NUMBER` ya tiene el prefijo, termina enviando `whatsapp:whatsapp:+14155238886` → Twilio error 21212 ("Invalid From Number").
+
+**Fix de DATABASE_URL:** en Railway la ruta relativa `./agentkit.db` no tiene permisos de escritura. Usar `sqlite+aiosqlite:////tmp/agentkit.db` para sandbox, o PostgreSQL para producción: Railway → Add Service → Database → PostgreSQL.
+
+### 3.3. Configurar el webhook en Twilio
+
+En Twilio Console → Messaging → Sandbox Settings:
+
+- **When a message comes in:** `https://TU-APP.up.railway.app/webhook` → método POST
+- Guardar
+
+Sin este paso, Twilio nunca le avisa al servidor que llegó un mensaje.
+
+### 3.4. Verificar que el deploy funciona
+
+Abrir `https://TU-APP.up.railway.app/` en el browser. Debe responder `{"status": "ok"}`.
+
+---
+
+## 4. Estructura del repositorio
+
+```
+whatsapp-agentkit/
+├── agent/
+│   ├── __init__.py
+│   ├── main.py          — Servidor FastAPI + webhook + delays + split de mensajes
+│   ├── brain.py         — Conexión con Claude API + inyección de hora local
+│   ├── memory.py        — Historial de conversaciones por número (SQLite/PostgreSQL)
+│   ├── security.py      — Rate limiting, idempotencia, sanitización de input
+│   ├── tools.py         — Herramientas del negocio (knowledge base, escalar a humano)
+│   └── providers/
+│       ├── __init__.py  — Factory: elige proveedor según .env
+│       ├── base.py      — Clase abstracta ProveedorWhatsApp
+│       └── twilio.py    — Adaptador Twilio con validación de firma HMAC-SHA1
+├── config/
+│   ├── business.yaml    — Datos del negocio (nombre, descripción, horario)
+│   └── prompts.yaml     — System prompt del agente (editar para ajustar comportamiento)
+├── knowledge/           — Archivos del negocio (FAQ, precios, catálogo, etc.)
+├── tests/
+│   ├── test_local.py    — Chat de prueba en terminal (sin WhatsApp real)
+│   └── test_security.py — 21 tests automáticos de seguridad
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+└── .env                 — Credenciales (NUNCA subir a GitHub)
+```
+
+**Dependencias principales:**
+
+```
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.32.0,<1.0.0
+litellm>=1.51.0,<2.0.0          # abstracción multi-proveedor LLM con fallback
+httpx>=0.27.0,<1.0.0
+python-dotenv>=1.0.1,<2.0.0
+sqlalchemy>=2.0.36,<3.0.0
+pyyaml>=6.0.2,<7.0.0
+aiosqlite>=0.20.0,<1.0.0
+python-multipart>=0.0.18,<1.0.0
+```
+
+---
+
+## 5. Personalización del agente
+
+### 5.1. Identidad y embudo de conversación
+
+El agente atiende consultas iniciales por WhatsApp, califica leads y lleva al prospecto hacia el próximo paso definido por el negocio (agendar una reunión, solicitar una auditoría, concretar una compra, etc.).
+
+El embudo recomendado es de 3 mensajes:
+- **Mensaje 1:** saludo según hora del día + pedir nombre + preguntar cuál es el problema
+- **Mensaje 2:** empatía con el problema + orientar hacia la solución + 1 pregunta de calificación
+- **Mensaje 3:** cerrar con la oferta o el próximo paso concreto
+
+### 5.2. Saludo dinámico por hora del día
+
+`brain.py` inyecta automáticamente la hora actual en el contexto antes de llamar a Claude, para que el agente salude correctamente:
+- 6:00 a 12:00 → "Buenos días"
+- 12:00 a 19:00 → "Buenas tardes"
+- 19:00 a 6:00 → "Buenas noches"
+
+La zona horaria se configura en `brain.py`. Por defecto usa la del servidor.
+
+### 5.3. Reglas de estilo para WhatsApp
+
+Estas reglas deben estar en el system prompt de todo agente que corra en WhatsApp:
+
+```
+ESTILO DE ESCRITURA (CRÍTICO):
+- Estás escribiendo en WhatsApp, NO en Slack ni en un email.
+- NUNCA uses markdown: prohibido negrita, cursiva, títulos, citas, código.
+- NUNCA uses listas con guiones ni con asteriscos.
+- NUNCA uses bullets ni numeración.
+- Si necesitás enumerar algo, hacelo en prosa: "primero X, después Y, y por último Z".
+- Mensajes cortos. Máximo 2-3 oraciones por mensaje.
+- Si tenés que decir algo largo, partilo en VARIOS mensajes cortos.
+- Emojis con moderación: máximo uno cada 3-4 mensajes.
+- Hablás como persona real desde el celular: contracciones, informal.
+- No saludes en cada mensaje. Solo al inicio de la conversación.
+- No firmes los mensajes con el nombre del agente.
+- No uses guion largo ( — ). Reemplazalo con comas o puntos.
+```
+
+### 5.4. Delay humano antes de enviar
+
+```python
+import asyncio, random
+
+delay = min(2 + len(respuesta) / 80, 8) + random.uniform(0, 1.5)
+await asyncio.sleep(delay)
+```
+
+Simula una persona escribiendo a ~80 caracteres por segundo, piso de 2s, techo de 8s, con variabilidad natural.
+
+### 5.5. Partición de respuestas largas
+
+Si la respuesta supera 280 caracteres o contiene saltos de párrafo dobles (`\n\n`), se parte en bloques. Entre cada bloque hay un delay de `random.uniform(1.5, 3)` segundos. Si no hay saltos, se corta por oraciones manteniendo bloques menores a 280 caracteres.
+
+### 5.6. Para adaptar el agente a un negocio nuevo
+
+Editar estos tres lugares:
+- `config/business.yaml` — nombre del negocio, descripción, horario de atención
+- `config/prompts.yaml` — system prompt completo con los servicios, tono y reglas del agente
+- `knowledge/` — subir archivos con información del negocio (PDFs, CSVs, menú, FAQ, etc.)
+
+---
+
+## 6. Diagnóstico de problemas conocidos
+
+### 6.1. El agente no responde a mensajes
+
+Causas posibles en orden de probabilidad:
+
+1. **Webhook de Twilio no configurado o apuntando a URL vieja.** Verificar en Sandbox Settings que la URL sea la del último deploy.
+2. **`TWILIO_PHONE_NUMBER` con prefijo `whatsapp:`** → error Twilio 21212. Solución: dejar solo el número en formato E.164 (ej: `+14155238886`).
+3. **Número no habilitado como canal de WhatsApp** → error Twilio 63007. Solución: usar el número del sandbox o un sender aprobado.
+4. **El número del usuario no hizo el `join` al sandbox.** Enviar primero `join <dos-palabras>` al número del sandbox.
+5. **Variables de entorno faltantes o incorrectas** (ANTHROPIC_API_KEY, credenciales de Twilio).
+6. **`TWILIO_VALIDATE_SIGNATURE=true` con Railway detrás de proxy.** Usar `false` en sandbox hasta confirmar que funciona con la URL correcta.
+7. **`DATABASE_URL` con ruta relativa sin permisos en Railway.** Usar `/tmp/agentkit.db` o PostgreSQL.
+
+### 6.2. Cómo leer logs en Railway
+
+- Railway → Proyecto → Servicio → Deployments → View logs
+- Buscar líneas con `ERROR:agentkit:`
+- Para errores de Twilio: `https://www.twilio.com/docs/errors/CODIGO`
+
+---
+
+## 7. Lecciones aprendidas (problemas que ya resolvimos)
+
+| Problema | Causa | Solución |
+|---|---|---|
+| Agente respondía con markdown y bullets | El modelo por defecto formatea así | Agregar sección ESTILO DE ESCRITURA al system prompt |
+| Saludo sin considerar hora del día | El agente no sabía la hora actual | Inyectar hora local en `brain.py` antes de llamar a Claude |
+| Respuestas largas en un solo bloque | Sin lógica de split | Partir por `\n\n` o por oraciones si supera 280 caracteres |
+| Respuestas instantáneas (se siente robot) | Sin delay | Agregar `asyncio.sleep` proporcional al largo del mensaje |
+| Railway no encontraba los archivos del agente | `.gitignore` del template excluía `agent/`, `config/`, etc. | Reemplazar `.gitignore` por versión de producción al hacer deploy |
+| Deploy crasheaba en Railway | `DATABASE_URL` apuntaba a ruta relativa sin permisos | Usar `/tmp/agentkit.db` o agregar PostgreSQL |
+| Agente no enviaba mensajes (error 21212) | `TWILIO_PHONE_NUMBER` tenía prefijo `whatsapp:` | El código ya agrega el prefijo; la variable debe tener solo el número |
+| Agente quedaba mudo con `overloaded_error` de Anthropic | API saturada sin fallback configurado | Implementar fallback multi-proveedor en `brain.py` via LiteLLM |
+
+---
+
+## 8. Lo que falta para estar 100% en producción
+
+### Crítico
+
+| Qué | Por qué | Cómo |
+|---|---|---|
+| Número de WhatsApp real | El sandbox requiere activación manual por cada usuario y no es exclusivo | Solicitar WhatsApp Business API en Twilio o usar Meta Cloud API directamente |
+| PostgreSQL en Railway | SQLite en `/tmp` se borra en cada reinicio, se pierde el historial | Railway → Add Service → Database → PostgreSQL |
+| `TWILIO_VALIDATE_SIGNATURE=true` funcionando | En producción cualquiera podría enviar mensajes falsos al webhook | Verificar que Railway pase el header `X-Forwarded-Proto` correctamente |
+
+### Importante
+
+- **Manejo de medios:** imágenes, audios y documentos que mandan los usuarios (agregar en `parsear_webhook`)
+- **Escalamiento a humano:** `tools.py` tiene `escalar_a_humano()` preparado, falta conectarlo a email/Slack/CRM
+- **Monitoreo de errores:** integrar Sentry o BetterStack para alertas cuando el agente cae
+- **Panel de conversaciones:** para que el cliente vea las conversaciones (Notion, Airtable, o interfaz sobre la BD)
+
+### Para escalar el producto a múltiples clientes
+
+- **Multitenancy:** una instancia por cliente (más simple) o routing por número con configs separadas por tenant
+- **Knowledge base dinámica:** para catálogos grandes usar Pinecone o Supabase Vector en lugar de búsqueda por texto plano
+- **Métricas de uso:** cuántos mensajes, cuánto cuesta por cliente, preguntas más frecuentes
+
+---
+
+## 9. Costos estimados
+
+| Servicio | Costo aproximado |
+|---|---|
+| Anthropic Claude Sonnet (primario) | ~$3 por millón de tokens de entrada, ~$15 por millón de salida |
+| Groq / LLaMA (fallback 1) | Tier gratuito generoso; ~$0.05-0.10 por millón en paid |
+| Gemini (fallback 2) | Tier gratuito disponible; ~$0.075 por millón en paid |
+| OpenAI GPT-4o (fallback 3) | ~$2.50 por millón de tokens de entrada |
+| Twilio WhatsApp | ~$0.005 por mensaje enviado (más costo del número) |
+| Railway Hobby | $5/mes. Plan Pro: $20/mes |
+| **Total para testing** | Menos de $10/mes con volumen bajo |
+
+Para 1.000 conversaciones por mes, el costo total estimado es entre $15-40 USD dependiendo de la longitud de las conversaciones. Con fallback activo, los picos de carga o saturación de Anthropic se absorben automáticamente sin costo adicional significativo (Groq y Gemini son muy baratos en comparación).
+
+---
+
+## 10. Checklist de lanzamiento para cada nuevo cliente
+
+- [ ] Datos del negocio recopilados (nombre, descripción, servicios, precios, horario)
+- [ ] `config/business.yaml` y `config/prompts.yaml` personalizados
+- [ ] Archivos del negocio en `/knowledge` (menú, FAQ, catálogo, políticas)
+- [ ] Tests locales pasando (`python tests/test_local.py`)
+- [ ] Tests de seguridad pasando (`python3 -m pytest tests/test_security.py -v`)
+- [ ] Número de WhatsApp real aprobado por Meta/Twilio
+- [ ] PostgreSQL configurado en Railway
+- [ ] Variables de entorno en Railway completas y correctas
+- [ ] `ANTHROPIC_API_KEY` configurada (modelo primario)
+- [ ] Al menos una key de fallback configurada (`GROQ_API_KEY` o `GEMINI_API_KEY`)
+- [ ] `LLM_MODEL` configurado (ej: `anthropic/claude-sonnet-4-6`)
+- [ ] `ENVIRONMENT=production` en Railway
+- [ ] `TWILIO_VALIDATE_SIGNATURE=true` funcionando correctamente
+- [ ] `TWILIO_PHONE_NUMBER` sin prefijo `whatsapp:`
+- [ ] Webhook configurado en Twilio apuntando a la URL de Railway
+- [ ] Test end-to-end: mensaje real desde WhatsApp → respuesta del agente
+- [ ] Monitoreo de errores configurado
+- [ ] Cliente entrenado: cómo ver conversaciones, cómo escalar a humano
+
+---
+
+## 11. Comandos de referencia rápida
+
+```bash
+# Chat de prueba sin WhatsApp
+python tests/test_local.py
+
+# Tests de seguridad
+python3 -m pytest tests/test_security.py -v
+
+# Arrancar servidor local
+uvicorn agent.main:app --reload --port 8000
+
+# Exponer webhook al exterior (desarrollo local)
+ngrok http 8000
+
+# Build y arrancar con Docker
+docker compose up --build
+
+# Ver logs en tiempo real (Docker)
+docker compose logs -f agent
+
+# Subir cambios y hacer deploy en Railway
+git add .
+git commit -m "descripción del cambio"
+git push origin main
+```
+
+---
+
+## 12. URLs de referencia
+
+- Railway dashboard: `https://railway.app`
+- Twilio Console: `https://console.twilio.com`
+- Twilio error codes: `https://www.twilio.com/docs/errors/CODIGO`
+- Anthropic API Keys: `https://platform.anthropic.com/settings/api-keys`
+- Repo base: `https://github.com/jon-human-in-the-loop/whatsapp-agentkit`

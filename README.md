@@ -294,7 +294,7 @@ Para los curiosos, esto es lo que se usa por debajo:
 
 | Componente | Tecnologia | Para que sirve |
 |-----------|-----------|----------------|
-| IA | Claude AI (claude-sonnet-4-6) | Genera las respuestas inteligentes |
+| IA | LiteLLM + Claude / Groq / Gemini / OpenAI | Genera respuestas; con fallback automático entre proveedores |
 | Servidor | FastAPI + Uvicorn | Recibe los webhooks de WhatsApp |
 | WhatsApp | Meta / Twilio | Conecta con WhatsApp (tu eliges) |
 | Base de datos | SQLite (local) / PostgreSQL (prod) | Guarda historial de conversaciones |
@@ -315,7 +315,13 @@ Proveedor (Meta/Twilio) ←→ agent/providers/ (normaliza formato)
 FastAPI (agent/main.py) ←→ agent/memory.py (historial SQLite)
     |
     v
-Claude API (agent/brain.py) ←→ config/prompts.yaml (personalidad)
+agent/brain.py + LiteLLM ←→ config/prompts.yaml (personalidad)
+    |
+    ├── Anthropic Claude (primario)
+    ├── Groq / LLaMA (fallback 1)
+    ├── Gemini (fallback 2)
+    ├── OpenAI (fallback 3)
+    └── Perplexity (fallback 4)
     |
     v
 Respuesta enviada de vuelta por WhatsApp
@@ -326,6 +332,9 @@ El sistema usa un **patron adaptador** para proveedores de WhatsApp. Cada provee
 importa cual estas usando. Solo llama `proveedor.parsear_webhook()` y
 `proveedor.enviar_mensaje()`.
 
+Para los LLMs, `brain.py` usa LiteLLM con **fallback automatico**: si el proveedor
+primario falla (saturado, rate limit, caida), salta al siguiente sin intervencion manual.
+
 ---
 
 ## Preguntas frecuentes
@@ -335,7 +344,7 @@ No. Claude Code escribe todo el codigo por ti. Tu solo respondes preguntas.
 
 **Cuanto cuesta?**
 - AgentKit es gratis y open source
-- Claude API: pagas por uso (~$3/millon de tokens, muy barato para un bot)
+- LLMs: pagas por uso segun el proveedor (Groq y Gemini tienen tier gratis; Claude ~$3/millon de tokens)
 - WhatsApp: depende del proveedor (Twilio tiene sandbox gratis para probar)
 - Railway: plan gratis disponible para proyectos pequenos
 
@@ -361,6 +370,22 @@ El regenerara los archivos necesarios.
 Creado por **Todo de IA** — [@soyenriquerocha](https://instagram.com/soyenriquerocha)
 
 Construido con [Claude Code](https://claude.ai/claude-code) para builders de LATAM.
+
+---
+
+## Fork y mejoras de seguridad
+
+Fork mantenido por **Jonathan Flores** — [vanguardcrux.com](https://www.vanguardcrux.com/)
+
+Mejoras incluidas en este fork:
+- Validación de firma HMAC en webhooks de Meta y Twilio (previene spoofing)
+- Idempotencia de mensajes (evita respuestas duplicadas por retries)
+- Rate limiting por número de teléfono
+- Sanitización Unicode contra prompt injection
+- Módulo `agent/security.py` con funciones puras y 27 tests automáticos
+- Validación de variables de entorno al arrancar
+- Docker non-root, timeouts HTTP, dependency pinning
+- **Fallback automático multi-proveedor LLM** via LiteLLM: Anthropic → Groq → Gemini → OpenAI → Perplexity
 
 ---
 
