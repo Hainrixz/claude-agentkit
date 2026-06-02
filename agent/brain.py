@@ -10,8 +10,21 @@ logger = logging.getLogger("agentkit")
 
 litellm.suppress_debug_info = True
 
-LLM_MODEL = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-6")
-LLM_API_KEY = os.getenv("LLM_API_KEY")
+PRIMARY_MODEL = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-6")
+
+# Fallback automático: si el primario falla, LiteLLM prueba cada uno en orden
+FALLBACK_MODELS = [
+    "groq/llama-3.3-70b-versatile",
+    "gemini/gemini-1.5-pro",
+    "openai/gpt-4o",
+    "perplexity/sonar",
+]
+
+# Compatibilidad: si LLM_API_KEY está seteada (variable legacy) y no hay
+# ANTHROPIC_API_KEY, la mapeamos para no romper deploys existentes
+_legacy_key = os.getenv("LLM_API_KEY")
+if _legacy_key and not os.getenv("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = _legacy_key
 
 
 def cargar_config_prompts() -> dict:
@@ -39,7 +52,7 @@ def obtener_mensaje_fallback() -> str:
 
 
 async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
-    """Genera una respuesta usando el LLM configurado en LLM_MODEL."""
+    """Genera una respuesta usando el LLM configurado, con fallback automático."""
     if not mensaje or len(mensaje.strip()) < 2:
         return obtener_mensaje_fallback()
 
@@ -53,20 +66,21 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
 
     try:
         response = await litellm.acompletion(
-            model=LLM_MODEL,
+            model=PRIMARY_MODEL,
             messages=mensajes,
             max_tokens=1024,
             timeout=30,
-            api_key=LLM_API_KEY,
             num_retries=2,
+            fallbacks=FALLBACK_MODELS,
         )
+        modelo_usado = response.model or PRIMARY_MODEL
         respuesta = response.choices[0].message.content
         logger.info(
-            f"Respuesta generada — modelo: {LLM_MODEL} "
+            f"Respuesta generada — modelo: {modelo_usado} "
             f"({response.usage.prompt_tokens} in / {response.usage.completion_tokens} out)"
         )
         return respuesta
 
     except Exception as e:
-        logger.error(f"Error LLM ({LLM_MODEL}): {e}")
+        logger.error(f"Todos los proveedores LLM fallaron: {e}")
         return obtener_mensaje_error()
