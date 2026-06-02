@@ -18,6 +18,7 @@ from agent.security import (
     marcar_procesado,
     rate_limit_excedido,
 )
+from agent.tools import detectar_confirmacion, enviar_notificacion_lead
 
 load_dotenv()
 
@@ -93,6 +94,10 @@ async def webhook_handler(request: Request):
 
             await guardar_mensaje(msg.telefono, "user", msg.texto)
             await guardar_mensaje(msg.telefono, "assistant", respuesta)
+
+            # Notificar por email si Sofía confirmó una cita o capturó un lead
+            if detectar_confirmacion(respuesta):
+                enviar_notificacion_lead(msg.telefono, historial, respuesta)
 
             # Partir en bloques si hay párrafos dobles o la respuesta es larga
             bloques = [b.strip() for b in respuesta.split("\n\n") if b.strip()]

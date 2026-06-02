@@ -3,12 +3,21 @@ import os
 import pathlib
 import yaml
 import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 logger = logging.getLogger("agentkit")
 
 MAX_BYTES_ARCHIVO = 5 * 1024 * 1024
 MAX_RESULTADOS = 5
 KNOWLEDGE_DIR = pathlib.Path("knowledge").resolve()
+
+# Palabras que indican que Sofía cerró una cita o capturó un lead completo
+_PALABRAS_CONFIRMACION = [
+    "agendad", "confirmad", "reservad", "quedamos para", "te espero",
+    "nos vemos el", "reunión confirmada", "cita confirmada",
+]
 
 
 def cargar_info_negocio() -> dict:
@@ -82,3 +91,58 @@ def obtener_info_servicios(pilar: str = "") -> str:
     if pilar.lower() in servicios:
         return servicios[pilar.lower()]
     return "\n".join(servicios.values())
+
+
+def detectar_confirmacion(texto: str) -> bool:
+    """Devuelve True si el texto de Sofía indica que acaba de confirmar una cita o lead."""
+    texto_lower = texto.lower()
+    return any(p in texto_lower for p in _PALABRAS_CONFIRMACION)
+
+
+def enviar_notificacion_lead(telefono: str, historial: list[dict], respuesta_sofia: str) -> bool:
+    """
+    Envía un email de notificación cuando Sofía confirma una cita o captura un lead.
+    Requiere en .env: SMTP_EMAIL, SMTP_PASSWORD, NOTIFICATION_EMAIL.
+    """
+    smtp_email = os.getenv("SMTP_EMAIL")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    notification_email = os.getenv("NOTIFICATION_EMAIL")
+
+    if not all([smtp_email, smtp_password, notification_email]):
+        logger.warning("Notificación de lead omitida: SMTP_EMAIL, SMTP_PASSWORD o NOTIFICATION_EMAIL no configurados")
+        return False
+
+    # Armar resumen legible de la conversación
+    lineas = []
+    for m in historial[-20:]:  # últimos 20 mensajes
+        rol = "Cliente" if m["role"] == "user" else "Sofía"
+        lineas.append(f"{rol}: {m['content']}")
+    lineas.append(f"Sofía: {respuesta_sofia}")
+    resumen = "\n".join(lineas)
+
+    cuerpo = f"""Sofía acaba de confirmar una cita o capturar un lead.
+
+Teléfono del cliente: {telefono}
+
+─── Conversación ───────────────────────
+{resumen}
+────────────────────────────────────────
+
+Respondé por WhatsApp al: +{telefono}
+"""
+
+    msg = MIMEMultipart()
+    msg["Subject"] = f"🔔 Nuevo lead de WhatsApp — {telefono}"
+    msg["From"] = smtp_email
+    msg["To"] = notification_email
+    msg.attach(MIMEText(cuerpo, "plain", "utf-8"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+            server.login(smtp_email, smtp_password)
+            server.send_message(msg)
+        logger.info(f"Notificación de lead enviada a {notification_email} — tel: {telefono}")
+        return True
+    except Exception as e:
+        logger.error(f"Error enviando notificación de lead: {e}")
+        return False
