@@ -102,11 +102,13 @@ def detectar_confirmacion(texto: str) -> bool:
 def enviar_notificacion_lead(telefono: str, historial: list[dict], respuesta_sofia: str) -> bool:
     """
     Envía un email de notificación cuando Sofía confirma una cita o captura un lead.
-    Requiere en .env: SMTP_EMAIL, SMTP_PASSWORD, NOTIFICATION_EMAIL.
+    Requiere en .env: SMTP_EMAIL, SMTP_PASSWORD, NOTIFICATION_EMAIL, SMTP_HOST, SMTP_PORT.
     """
     smtp_email = os.getenv("SMTP_EMAIL")
     smtp_password = os.getenv("SMTP_PASSWORD")
     notification_email = os.getenv("NOTIFICATION_EMAIL")
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "465"))
 
     if not all([smtp_email, smtp_password, notification_email]):
         logger.warning("Notificación de lead omitida: SMTP_EMAIL, SMTP_PASSWORD o NOTIFICATION_EMAIL no configurados")
@@ -138,9 +140,16 @@ Respondé por WhatsApp al: +{telefono}
     msg.attach(MIMEText(cuerpo, "plain", "utf-8"))
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
-            server.login(smtp_email, smtp_password)
-            server.send_message(msg)
+        # Puerto 465 → SSL directo. Puerto 587 → STARTTLS.
+        if smtp_port == 587:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+                server.starttls()
+                server.login(smtp_email, smtp_password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=10) as server:
+                server.login(smtp_email, smtp_password)
+                server.send_message(msg)
         logger.info(f"Notificación de lead enviada a {notification_email} — tel: {telefono}")
         return True
     except Exception as e:
