@@ -1183,6 +1183,9 @@ Claude Code genera SOLO las variables del proveedor elegido (no las de los otros
 # Anthropic API
 ANTHROPIC_API_KEY=sk-ant-...
 
+# --- Si PREGUNTA 11 = Sí (búsqueda web) ---
+# YOU_API_KEY=ydc-sk-...
+
 # Proveedor de WhatsApp
 WHATSAPP_PROVIDER=  # meta | twilio
 
