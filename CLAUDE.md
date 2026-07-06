@@ -674,13 +674,23 @@ async def webhook_handler(request: Request):
 
 #### 3.5 — `agent/brain.py`
 
+Un solo archivo, siempre con la misma estructura. El ciclo de tool-use no hace nada
+si `TOOLS` está vacío — `response.stop_reason` nunca es `"tool_use"` sin herramientas
+declaradas, así que el loop simplemente rompe en la primera vuelta. Por eso hay UN
+solo bloque condicional que agregar (marcado abajo), no dos archivos distintos:
+genera el import de `buscar_en_internet` y la entrada en `TOOLS` **solo si** el
+usuario respondió Sí en PREGUNTA 11; si respondió No, deja `TOOLS = []` y omite
+ese import.
+
 ```python
 # agent/brain.py — Cerebro del agente: conexión con Claude API
 # Generado por AgentKit
 
 """
-Lógica de IA del agente. Lee el system prompt de prompts.yaml
-y genera respuestas usando la API de Anthropic Claude.
+Lógica de IA del agente. Lee el system prompt de prompts.yaml y genera respuestas
+usando la API de Anthropic Claude. Si el usuario activó búsqueda web (You.com) en
+la entrevista, TOOLS incluye buscar_en_internet y Claude puede llamarla cuando su
+conocimiento del negocio no alcance para responder.
 """
 
 import os
@@ -692,8 +702,40 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger("agentkit")
 
-# Cliente de Anthropic
 client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+# Máximo de vueltas de herramientas por mensaje — evita loops si el modelo insiste
+MAX_TURNOS_HERRAMIENTAS = 3
+
+# ────────────────────────────────────────────────────────────────────────
+# Claude Code: agrega el import de abajo Y la entrada en TOOLS SOLO si el
+# usuario respondió Sí en PREGUNTA 11 (búsqueda web). Si respondió No, deja
+# TOOLS = [] y no importes buscar_en_internet — el resto del archivo no cambia.
+# ────────────────────────────────────────────────────────────────────────
+from agent.tools import buscar_en_internet
+
+TOOLS = [
+    {
+        "name": "buscar_en_internet",
+        "description": (
+            "Busca informacion actualizada en internet (precios de terceros, noticias, "
+            "clima, disponibilidad, etc.) cuando la informacion del negocio no sea "
+            "suficiente para responder. Usa esta herramienta solo cuando la pregunta "
+            "requiera datos que cambian con el tiempo o que no esten en tu contexto."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "consulta": {
+                    "type": "string",
+                    "description": "La consulta de busqueda, en lenguaje natural",
+                }
+            },
+            "required": ["consulta"],
+        },
+    }
+]
+# ────────────────────────────────────────────────────────────────────────
 
 
 def cargar_config_prompts() -> dict:
@@ -724,9 +766,17 @@ def obtener_mensaje_fallback() -> str:
     return config.get("fallback_message", "Disculpa, no entendí tu mensaje. ¿Podrías reformularlo?")
 
 
+async def _ejecutar_herramienta(nombre: str, entrada: dict) -> str:
+    """Despacha una tool call de Claude a la función Python correspondiente."""
+    if nombre == "buscar_en_internet":
+        return await buscar_en_internet(entrada.get("consulta", ""))
+    return f"Herramienta desconocida: {nombre}"
+
+
 async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
     """
-    Genera una respuesta usando Claude API.
+    Genera una respuesta usando Claude API. Si TOOLS incluye buscar_en_internet,
+    Claude puede pedir esa herramienta antes de responder.
 
     Args:
         mensaje: El mensaje nuevo del usuario
@@ -755,17 +805,33 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         "content": mensaje
     })
 
-    try:
-        response = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=system_prompt,
-            messages=mensajes
-        )
+    kwargs = dict(model="claude-sonnet-4-6", max_tokens=1024, system=system_prompt)
+    if TOOLS:
+        kwargs["tools"] = TOOLS
 
-        respuesta = response.content[0].text
+    try:
+        response = None
+        for _ in range(MAX_TURNOS_HERRAMIENTAS):
+            response = await client.messages.create(messages=mensajes, **kwargs)
+
+            if response.stop_reason != "tool_use":
+                break
+
+            # Claude pidió usar una o más herramientas: ejecutarlas y devolver el resultado
+            mensajes.append({"role": "assistant", "content": response.content})
+            resultados_herramientas = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": bloque.id,
+                    "content": await _ejecutar_herramienta(bloque.name, bloque.input),
+                }
+                for bloque in response.content if bloque.type == "tool_use"
+            ]
+            mensajes.append({"role": "user", "content": resultados_herramientas})
+
+        texto = next((b.text for b in response.content if b.type == "text"), response.content[0].text)
         logger.info(f"Respuesta generada ({response.usage.input_tokens} in / {response.usage.output_tokens} out)")
-        return respuesta
+        return texto
 
     except Exception as e:
         logger.error(f"Error Claude API: {e}")
