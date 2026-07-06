@@ -967,6 +967,53 @@ from datetime import datetime
 logger = logging.getLogger("agentkit")
 
 
+# ════════════════════════════════════════════════════════════
+# Claude Code: genera la función buscar_en_internet() de abajo
+# SOLO si el usuario respondió SÍ en PREGUNTA 11 (búsqueda web).
+# Si respondió NO, omite este bloque completo — no importa httpx
+# en este archivo si no se usa.
+# ════════════════════════════════════════════════════════════
+import httpx
+
+YOU_SEARCH_URL = "https://ydc-index.io/v1/search"
+
+
+async def buscar_en_internet(consulta: str) -> str:
+    """
+    Busca informacion actualizada en la web via You.com Search API.
+    La usa Claude (agent/brain.py) cuando el conocimiento del negocio no alcanza.
+    Nunca lanza excepciones: si algo falla, retorna un mensaje que el modelo
+    puede leer y comunicar al cliente sin romper la conversación.
+    """
+    api_key = os.getenv("YOU_API_KEY")
+    if not api_key:
+        return "La búsqueda web no está configurada (falta YOU_API_KEY en .env)."
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                YOU_SEARCH_URL,
+                params={"query": consulta, "count": 3},
+                headers={"X-API-Key": api_key},
+            )
+            r.raise_for_status()
+            data = r.json()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.error(f"Error en búsqueda You.com: {e}")
+        return "No pude completar la búsqueda en internet en este momento."
+
+    resultados = data.get("results", {}).get("web", [])
+    if not resultados:
+        return "No encontré resultados relevantes en internet para esa consulta."
+
+    fragmentos = []
+    for item in resultados[:3]:
+        snippet = " ".join(item.get("snippets") or []) or item.get("description", "")
+        fragmentos.append(f"- {item.get('title', '')}: {snippet} ({item.get('url', '')})")
+
+    return "\n".join(fragmentos)
+
+
 def cargar_info_negocio() -> dict:
     """Carga la información del negocio desde business.yaml."""
     try:
