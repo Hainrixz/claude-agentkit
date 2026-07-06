@@ -34,6 +34,7 @@ Cuando generes el agente, SIEMPRE usa estas tecnologías:
 | Runtime | Python 3.11+ | Verificar en Fase 1 |
 | Servidor | FastAPI + Uvicorn | Webhook handler genérico |
 | IA | Anthropic Claude API | Modelo: `claude-sonnet-4-6` |
+| Búsqueda web (opcional) | You.com Search API | Solo si el usuario la activa en PREGUNTA 11 |
 | WhatsApp | Meta Cloud API / Twilio | El usuario elige durante el setup |
 | Base de datos | SQLite (local) / PostgreSQL (prod) | Via SQLAlchemy |
 | Variables | python-dotenv | NUNCA hardcodear keys |
@@ -256,6 +257,21 @@ PREGUNTA 10: [Depende de la respuesta de PREGUNTA 9]
 
             NOTA: Si el usuario quiere probar primero sin WhatsApp real,
                   puede poner tokens temporales y probar con test_local.py
+
+PREGUNTA 11: ¿Quieres que tu agente pueda buscar información actualizada en internet
+             (precios de terceros, noticias, clima, disponibilidad, etc.) cuando su
+             conocimiento del negocio no sea suficiente? Esto usa You.com Search API.
+             1. Sí
+             2. No, solo con la información que yo le doy
+
+            Si SÍ → "Comparte tu You.com API Key, la guardaré de forma segura en tu .env"
+                     Si NO la tiene → Guiar paso a paso:
+                     1. Ve a you.com/api (o platform.you.com)
+                     2. Crea una cuenta o inicia sesión
+                     3. Genera una API Key
+                     4. La key empieza con "ydc-sk-..."
+            Si NO → Continuamos sin esta capacidad (el agente solo usa /knowledge y lo
+                     que le contaste en la entrevista)
 ```
 
 **Al terminar la entrevista:**
@@ -658,13 +674,23 @@ async def webhook_handler(request: Request):
 
 #### 3.5 — `agent/brain.py`
 
+Un solo archivo, siempre con la misma estructura. El ciclo de tool-use no hace nada
+si `TOOLS` está vacío — `response.stop_reason` nunca es `"tool_use"` sin herramientas
+declaradas, así que el loop simplemente rompe en la primera vuelta. Por eso hay UN
+solo bloque condicional que agregar (marcado abajo), no dos archivos distintos:
+genera el import de `buscar_en_internet` y la entrada en `TOOLS` **solo si** el
+usuario respondió Sí en PREGUNTA 11; si respondió No, deja `TOOLS = []` y omite
+ese import.
+
 ```python
 # agent/brain.py — Cerebro del agente: conexión con Claude API
 # Generado por AgentKit
 
 """
-Lógica de IA del agente. Lee el system prompt de prompts.yaml
-y genera respuestas usando la API de Anthropic Claude.
+Lógica de IA del agente. Lee el system prompt de prompts.yaml y genera respuestas
+usando la API de Anthropic Claude. Si el usuario activó búsqueda web (You.com) en
+la entrevista, TOOLS incluye buscar_en_internet y Claude puede llamarla cuando su
+conocimiento del negocio no alcance para responder.
 """
 
 import os
@@ -676,8 +702,40 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger("agentkit")
 
-# Cliente de Anthropic
 client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+# Máximo de vueltas de herramientas por mensaje — evita loops si el modelo insiste
+MAX_TURNOS_HERRAMIENTAS = 3
+
+# ────────────────────────────────────────────────────────────────────────
+# Claude Code: agrega el import de abajo Y la entrada en TOOLS SOLO si el
+# usuario respondió Sí en PREGUNTA 11 (búsqueda web). Si respondió No, deja
+# TOOLS = [] y no importes buscar_en_internet — el resto del archivo no cambia.
+# ────────────────────────────────────────────────────────────────────────
+from agent.tools import buscar_en_internet
+
+TOOLS = [
+    {
+        "name": "buscar_en_internet",
+        "description": (
+            "Busca informacion actualizada en internet (precios de terceros, noticias, "
+            "clima, disponibilidad, etc.) cuando la informacion del negocio no sea "
+            "suficiente para responder. Usa esta herramienta solo cuando la pregunta "
+            "requiera datos que cambian con el tiempo o que no esten en tu contexto."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "consulta": {
+                    "type": "string",
+                    "description": "La consulta de busqueda, en lenguaje natural",
+                }
+            },
+            "required": ["consulta"],
+        },
+    }
+]
+# ────────────────────────────────────────────────────────────────────────
 
 
 def cargar_config_prompts() -> dict:
@@ -708,9 +766,17 @@ def obtener_mensaje_fallback() -> str:
     return config.get("fallback_message", "Disculpa, no entendí tu mensaje. ¿Podrías reformularlo?")
 
 
+async def _ejecutar_herramienta(nombre: str, entrada: dict) -> str:
+    """Despacha una tool call de Claude a la función Python correspondiente."""
+    if nombre == "buscar_en_internet":
+        return await buscar_en_internet(entrada.get("consulta", ""))
+    return f"Herramienta desconocida: {nombre}"
+
+
 async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
     """
-    Genera una respuesta usando Claude API.
+    Genera una respuesta usando Claude API. Si TOOLS incluye buscar_en_internet,
+    Claude puede pedir esa herramienta antes de responder.
 
     Args:
         mensaje: El mensaje nuevo del usuario
@@ -739,17 +805,33 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         "content": mensaje
     })
 
-    try:
-        response = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=system_prompt,
-            messages=mensajes
-        )
+    kwargs = dict(model="claude-sonnet-4-6", max_tokens=1024, system=system_prompt)
+    if TOOLS:
+        kwargs["tools"] = TOOLS
 
-        respuesta = response.content[0].text
+    try:
+        response = None
+        for _ in range(MAX_TURNOS_HERRAMIENTAS):
+            response = await client.messages.create(messages=mensajes, **kwargs)
+
+            if response.stop_reason != "tool_use":
+                break
+
+            # Claude pidió usar una o más herramientas: ejecutarlas y devolver el resultado
+            mensajes.append({"role": "assistant", "content": response.content})
+            resultados_herramientas = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": bloque.id,
+                    "content": await _ejecutar_herramienta(bloque.name, bloque.input),
+                }
+                for bloque in response.content if bloque.type == "tool_use"
+            ]
+            mensajes.append({"role": "user", "content": resultados_herramientas})
+
+        texto = next((b.text for b in response.content if b.type == "text"), response.content[0].text)
         logger.info(f"Respuesta generada ({response.usage.input_tokens} in / {response.usage.output_tokens} out)")
-        return respuesta
+        return texto
 
     except Exception as e:
         logger.error(f"Error Claude API: {e}")
@@ -883,6 +965,53 @@ import logging
 from datetime import datetime
 
 logger = logging.getLogger("agentkit")
+
+
+# ════════════════════════════════════════════════════════════
+# Claude Code: genera la función buscar_en_internet() de abajo
+# SOLO si el usuario respondió SÍ en PREGUNTA 11 (búsqueda web).
+# Si respondió NO, omite este bloque completo — no importa httpx
+# en este archivo si no se usa.
+# ════════════════════════════════════════════════════════════
+import httpx
+
+YOU_SEARCH_URL = "https://ydc-index.io/v1/search"
+
+
+async def buscar_en_internet(consulta: str) -> str:
+    """
+    Busca informacion actualizada en la web via You.com Search API.
+    La usa Claude (agent/brain.py) cuando el conocimiento del negocio no alcanza.
+    Nunca lanza excepciones: si algo falla, retorna un mensaje que el modelo
+    puede leer y comunicar al cliente sin romper la conversación.
+    """
+    api_key = os.getenv("YOU_API_KEY")
+    if not api_key:
+        return "La búsqueda web no está configurada (falta YOU_API_KEY en .env)."
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                YOU_SEARCH_URL,
+                params={"query": consulta, "count": 3},
+                headers={"X-API-Key": api_key},
+            )
+            r.raise_for_status()
+            data = r.json()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.error(f"Error en búsqueda You.com: {e}")
+        return "No pude completar la búsqueda en internet en este momento."
+
+    resultados = data.get("results", {}).get("web", [])
+    if not resultados:
+        return "No encontré resultados relevantes en internet para esa consulta."
+
+    fragmentos = []
+    for item in resultados[:3]:
+        snippet = " ".join(item.get("snippets") or []) or item.get("description", "")
+        fragmentos.append(f"- {item.get('title', '')}: {snippet} ({item.get('url', '')})")
+
+    return "\n".join(fragmentos)
 
 
 def cargar_info_negocio() -> dict:
@@ -1054,6 +1183,9 @@ Claude Code genera SOLO las variables del proveedor elegido (no las de los otros
 # Anthropic API
 ANTHROPIC_API_KEY=sk-ant-...
 
+# --- Si PREGUNTA 11 = Sí (búsqueda web) ---
+# YOU_API_KEY=ydc-sk-...
+
 # Proveedor de WhatsApp
 WHATSAPP_PROVIDER=  # meta | twilio
 
@@ -1122,7 +1254,12 @@ dentro de `config/prompts.yaml`, en la sección "Información del negocio".
 
 3. **El test simula un chat** — el usuario escribe mensajes como cliente y ve las respuestas del agente
 
-4. **Evaluar con el usuario:**
+4. **Si activó búsqueda web (PREGUNTA 11 = Sí)**, prueba también un mensaje que
+   requiera información actual y que NO esté en `/knowledge` ni en la entrevista
+   (ej: "¿qué clima hace hoy?" o "cuál es el precio del dólar hoy"), para confirmar
+   que el agente decide usar `buscar_en_internet` y responde con datos reales.
+
+5. **Evaluar con el usuario:**
    ```
    ¿Tu agente responde como esperabas? (si/no)
    ```
@@ -1130,7 +1267,7 @@ dentro de `config/prompts.yaml`, en la sección "Información del negocio".
    - Si **NO**: Preguntar qué ajustar, modificar `config/prompts.yaml` y repetir
    - Si **SÍ**: Continuar a Fase 5
 
-5. **Mostrar mensaje:**
+6. **Mostrar mensaje:**
    ```
    Fase 4 completada — Agente probado y aprobado
 
@@ -1219,6 +1356,7 @@ Solo ejecutar si el usuario confirma que quiere hacer deploy.
       - ENVIRONMENT = production
       - DATABASE_URL = [Railway te da una si agregas PostgreSQL]
       - [Variables del proveedor elegido — ver abajo]
+      - YOU_API_KEY = [solo si activaste búsqueda web en PREGUNTA 11]
 
       Si META:     META_ACCESS_TOKEN, META_PHONE_NUMBER_ID, META_VERIFY_TOKEN
       Si TWILIO:   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
@@ -1315,6 +1453,9 @@ pip install -r requirements.txt
 ```env
 # Anthropic
 ANTHROPIC_API_KEY=sk-ant-...
+
+# You.com Search API (solo si PREGUNTA 11 = Sí)
+# YOU_API_KEY=ydc-sk-...
 
 # Proveedor de WhatsApp (meta | twilio)
 WHATSAPP_PROVIDER=

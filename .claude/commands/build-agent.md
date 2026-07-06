@@ -10,10 +10,11 @@ FASE 1 — Bienvenida y verificación del entorno
 - Crea .env base
 
 FASE 2 — Entrevista del negocio
-- Haz las 10 preguntas UNA POR UNA
+- Haz las 11 preguntas UNA POR UNA
 - Espera respuesta antes de continuar a la siguiente
 - PREGUNTA 9: el usuario elige su proveedor de WhatsApp (Meta/Twilio)
 - PREGUNTA 10: pide las credenciales específicas del proveedor elegido
+- PREGUNTA 11: el usuario decide si activa búsqueda web (You.com); si sí, pide YOU_API_KEY
 - Guarda todas las respuestas para la Fase 3
 
 FASE 3 — Generación del agente
@@ -22,12 +23,15 @@ FASE 3 — Generación del agente
 - Si hay archivos en /knowledge, léelos e incorpóralos al prompt
 - Genera agent/providers/ con el proveedor elegido (base.py + __init__.py + adaptador)
 - Genera agent/main.py (FastAPI + webhook provider-agnostic)
-- Genera agent/brain.py (Claude API)
+- Genera agent/brain.py (Claude API + ciclo de tool-use). Agrega el import de
+  buscar_en_internet y su entrada en TOOLS solo si PREGUNTA 11 = Sí; si no, deja
+  TOOLS = [] — el resto del archivo es igual en ambos casos.
 - Genera agent/memory.py (SQLite + historial)
-- Genera agent/tools.py (herramientas según caso de uso)
+- Genera agent/tools.py (herramientas según caso de uso; incluye buscar_en_internet()
+  solo si PREGUNTA 11 = Sí)
 - Genera tests/test_local.py (simulador de chat)
 - Genera Dockerfile y docker-compose.yml
-- Configura .env con WHATSAPP_PROVIDER y las API keys del usuario
+- Configura .env con WHATSAPP_PROVIDER, YOU_API_KEY (si aplica) y las API keys del usuario
 
 FASE 4 — Testing local
 - Ejecuta python tests/test_local.py

@@ -45,7 +45,7 @@ a guiarte paso a paso.
 
 ### Paso 3: Claude Code te entrevista (5 minutos)
 
-Te hace 10 preguntas, una por una:
+Te hace 11 preguntas, una por una:
 
 1. **Nombre de tu negocio** — ej: "Cafeteria El Buen Sabor"
 2. **A que se dedica** — ej: "Vendemos cafe de especialidad y postres artesanales"
@@ -57,6 +57,7 @@ Te hace 10 preguntas, una por una:
 8. **API Key de Anthropic** — la llave para usar Claude AI (te guia a obtenerla)
 9. **Proveedor de WhatsApp** — eliges entre Meta o Twilio
 10. **Credenciales del proveedor** — el token o keys de tu servicio de WhatsApp
+11. **Busqueda web (opcional)** — si quieres que el agente busque info actualizada en internet con You.com
 
 ### Paso 4: Claude Code construye tu agente (2-5 minutos)
 
@@ -295,6 +296,7 @@ Para los curiosos, esto es lo que se usa por debajo:
 | Componente | Tecnologia | Para que sirve |
 |-----------|-----------|----------------|
 | IA | Claude AI (claude-sonnet-4-6) | Genera las respuestas inteligentes |
+| Busqueda web (opcional) | You.com Search API | El agente busca info actualizada (precios, clima, noticias) cuando tu conocimiento de negocio no alcanza |
 | Servidor | FastAPI + Uvicorn | Recibe los webhooks de WhatsApp |
 | WhatsApp | Meta / Twilio | Conecta con WhatsApp (tu eliges) |
 | Base de datos | SQLite (local) / PostgreSQL (prod) | Guarda historial de conversaciones |
