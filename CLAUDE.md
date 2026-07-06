@@ -1454,6 +1454,9 @@ pip install -r requirements.txt
 # Anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 
+# You.com Search API (solo si PREGUNTA 11 = Sí)
+# YOU_API_KEY=ydc-sk-...
+
 # Proveedor de WhatsApp (meta | twilio)
 WHATSAPP_PROVIDER=
 
