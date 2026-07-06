@@ -1356,6 +1356,7 @@ Solo ejecutar si el usuario confirma que quiere hacer deploy.
       - ENVIRONMENT = production
       - DATABASE_URL = [Railway te da una si agregas PostgreSQL]
       - [Variables del proveedor elegido — ver abajo]
+      - YOU_API_KEY = [solo si activaste búsqueda web en PREGUNTA 11]
 
       Si META:     META_ACCESS_TOKEN, META_PHONE_NUMBER_ID, META_VERIFY_TOKEN
       Si TWILIO:   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
