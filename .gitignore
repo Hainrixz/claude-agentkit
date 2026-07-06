@@ -43,6 +43,9 @@ Thumbs.db
 *.swo
 *~
 
+# Claude Code — permisos locales del desarrollador (no compartir)
+.claude/settings.local.json
+
 # Docker
 .dockerignore
 
