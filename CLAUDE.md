@@ -34,6 +34,7 @@ Cuando generes el agente, SIEMPRE usa estas tecnologías:
 | Runtime | Python 3.11+ | Verificar en Fase 1 |
 | Servidor | FastAPI + Uvicorn | Webhook handler genérico |
 | IA | Anthropic Claude API | Modelo: `claude-sonnet-4-6` |
+| Búsqueda web (opcional) | You.com Search API | Solo si el usuario la activa en PREGUNTA 11 |
 | WhatsApp | Meta Cloud API / Twilio | El usuario elige durante el setup |
 | Base de datos | SQLite (local) / PostgreSQL (prod) | Via SQLAlchemy |
 | Variables | python-dotenv | NUNCA hardcodear keys |
