@@ -1254,7 +1254,12 @@ dentro de `config/prompts.yaml`, en la sección "Información del negocio".
 
 3. **El test simula un chat** — el usuario escribe mensajes como cliente y ve las respuestas del agente
 
-4. **Evaluar con el usuario:**
+4. **Si activó búsqueda web (PREGUNTA 11 = Sí)**, prueba también un mensaje que
+   requiera información actual y que NO esté en `/knowledge` ni en la entrevista
+   (ej: "¿qué clima hace hoy?" o "cuál es el precio del dólar hoy"), para confirmar
+   que el agente decide usar `buscar_en_internet` y responde con datos reales.
+
+5. **Evaluar con el usuario:**
    ```
    ¿Tu agente responde como esperabas? (si/no)
    ```
@@ -1262,7 +1267,7 @@ dentro de `config/prompts.yaml`, en la sección "Información del negocio".
    - Si **NO**: Preguntar qué ajustar, modificar `config/prompts.yaml` y repetir
    - Si **SÍ**: Continuar a Fase 5
 
-5. **Mostrar mensaje:**
+6. **Mostrar mensaje:**
    ```
    Fase 4 completada — Agente probado y aprobado
 
