@@ -257,6 +257,21 @@ PREGUNTA 10: [Depende de la respuesta de PREGUNTA 9]
 
             NOTA: Si el usuario quiere probar primero sin WhatsApp real,
                   puede poner tokens temporales y probar con test_local.py
+
+PREGUNTA 11: ¿Quieres que tu agente pueda buscar información actualizada en internet
+             (precios de terceros, noticias, clima, disponibilidad, etc.) cuando su
+             conocimiento del negocio no sea suficiente? Esto usa You.com Search API.
+             1. Sí
+             2. No, solo con la información que yo le doy
+
+            Si SÍ → "Comparte tu You.com API Key, la guardaré de forma segura en tu .env"
+                     Si NO la tiene → Guiar paso a paso:
+                     1. Ve a you.com/api (o platform.you.com)
+                     2. Crea una cuenta o inicia sesión
+                     3. Genera una API Key
+                     4. La key empieza con "ydc-sk-..."
+            Si NO → Continuamos sin esta capacidad (el agente solo usa /knowledge y lo
+                     que le contaste en la entrevista)
 ```
 
 **Al terminar la entrevista:**
