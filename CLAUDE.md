@@ -842,7 +842,7 @@ async def obtener_historial(telefono: str, limite: int = 20) -> list[dict]:
         result = await session.execute(query)
         mensajes = result.scalars().all()
 
-        # Invertir para orden cronológico (los más recientes están primero)
+        # Invertir para orden cronológico (los más antiguos quedan primero)
         mensajes.reverse()
 
         return [
