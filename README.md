@@ -54,7 +54,7 @@ Te hace 10 preguntas, una por una:
 5. **Tono de comunicacion** — profesional, amigable, vendedor, o empatico
 6. **Horario de atencion** — ej: "Lunes a Viernes 9am a 6pm"
 7. **Archivos de tu negocio** — menu, precios, FAQ (los pones en la carpeta /knowledge)
-8. **API Key de Anthropic** — la llave para usar Claude AI (te guia a obtenerla)
+8. **API Key de Gemini** — la llave para usar Gemini AI (te guia a obtenerla)
 9. **Proveedor de WhatsApp** — eliges entre Meta o Twilio
 10. **Credenciales del proveedor** — el token o keys de tu servicio de WhatsApp
 
@@ -66,7 +66,7 @@ Con tus respuestas, genera automaticamente estos archivos:
 tu-proyecto/
 ├── agent/                     ← EL AGENTE COMPLETO
 │   ├── main.py                Servidor web que recibe mensajes de WhatsApp
-│   ├── brain.py               Conexion con Claude AI (el cerebro)
+│   ├── brain.py               Conexion con Gemini AI (el cerebro)
 │   ├── memory.py              Guarda el historial de cada cliente
 │   ├── tools.py               Herramientas especificas de tu negocio
 │   └── providers/             Conexion con tu servicio de WhatsApp
@@ -181,11 +181,11 @@ npm install -g @anthropic-ai/claude-code
 claude
 ```
 
-### 3. API Key de Anthropic
-1. Ve a [platform.anthropic.com](https://platform.anthropic.com/settings/api-keys)
-2. Crea una cuenta o inicia sesion
-3. Ve a Settings → API Keys → Create Key
-4. Copia la key (empieza con `sk-ant-...`)
+### 3. API Key de Gemini
+1. Ve a [aistudio.google.com](https://aistudio.google.com/)
+2. Inicia sesión con tu cuenta de Google
+3. Haz clic en **Get API Key**
+4. Crea una nueva API Key y cópiala (empieza con `AIzaSy...`)
 
 ### 4. Cuenta de WhatsApp API (elige una)
 
@@ -294,7 +294,7 @@ Para los curiosos, esto es lo que se usa por debajo:
 
 | Componente | Tecnologia | Para que sirve |
 |-----------|-----------|----------------|
-| IA | Claude AI (claude-sonnet-4-6) | Genera las respuestas inteligentes |
+| IA | Google Gemini AI (gemini-2.5-flash) | Genera las respuestas inteligentes |
 | Servidor | FastAPI + Uvicorn | Recibe los webhooks de WhatsApp |
 | WhatsApp | Meta / Twilio | Conecta con WhatsApp (tu eliges) |
 | Base de datos | SQLite (local) / PostgreSQL (prod) | Guarda historial de conversaciones |
@@ -315,7 +315,7 @@ Proveedor (Meta/Twilio) ←→ agent/providers/ (normaliza formato)
 FastAPI (agent/main.py) ←→ agent/memory.py (historial SQLite)
     |
     v
-Claude API (agent/brain.py) ←→ config/prompts.yaml (personalidad)
+Gemini API (agent/brain.py) ←→ config/prompts.yaml (personalidad)
     |
     v
 Respuesta enviada de vuelta por WhatsApp
@@ -335,7 +335,7 @@ No. Claude Code escribe todo el codigo por ti. Tu solo respondes preguntas.
 
 **Cuanto cuesta?**
 - AgentKit es gratis y open source
-- Claude API: pagas por uso (~$3/millon de tokens, muy barato para un bot)
+- Gemini API: pagas por uso (muy económico en Google AI Studio, con plan gratuito disponible)
 - WhatsApp: depende del proveedor (Twilio tiene sandbox gratis para probar)
 - Railway: plan gratis disponible para proyectos pequenos
 
